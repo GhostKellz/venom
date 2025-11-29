@@ -1,16 +1,27 @@
 //! VENOM — High-Performance Gaming Runtime & Compositor
 //!
 //! Next-generation Linux gaming runtime built on top of NVPrime.
-//! Designed to be the "Gamescope killer" - NVIDIA-native, latency-focused.
+//! Designed to surpass and supersede Gamescope - NVIDIA-native, latency-focused.
 //!
 //! Core Components:
 //! - Runtime: Frame scheduling, latency control, direct scanout
 //! - Compositor: Wayland-based, HDR passthrough, VRR control
 //! - Latency Engine: Reflex monitoring, frame queue analysis
 //! - Vulkan Layer: Zero-copy overlays, shader introspection
+//!
+//! Built on the NVPrime ecosystem:
+//! - nvvk: Vulkan extension wrappers (VK_NV_low_latency2, etc.)
+//! - nvlatency: Reflex-style latency measurement
+//! - nvsync: VRR/G-Sync management
+//! - nvhud: Performance overlay
+//! - nvshader: Shader cache management
 
 const std = @import("std");
 
+// NVPrime - The unified NVIDIA platform
+pub const nvprime = @import("nvprime");
+
+// VENOM subsystems
 pub const runtime = @import("runtime.zig");
 pub const latency = @import("latency.zig");
 pub const compositor = @import("compositor.zig");
@@ -47,6 +58,20 @@ pub const Config = struct {
     frame_queue_depth: u8 = 2,
     /// Enable frame prediction
     frame_prediction: bool = false,
+    /// Latency preset (default, balanced, ultra, competitive)
+    latency_preset: nvprime.nvruntime.nvlatency.LatencyPreset = .balanced,
+};
+
+/// GPU information from nvprime
+pub const GpuInfo = struct {
+    name: []const u8,
+    driver_version: []const u8,
+    temperature: u32,
+    power_watts: f32,
+    gpu_utilization: u32,
+    memory_utilization: u32,
+    vrr_capable: bool,
+    hdr_capable: bool,
 };
 
 /// VENOM instance
@@ -59,7 +84,10 @@ pub const Venom = struct {
     runtime_ctx: ?*runtime.Context = null,
     latency_ctx: ?*latency.Context = null,
 
-    /// Initialize VENOM
+    // NVPrime integration
+    nvprime_initialized: bool = false,
+
+    /// Initialize VENOM with NVPrime integration
     pub fn init(allocator: std.mem.Allocator, config: Config) !*Venom {
         const self = try allocator.create(Venom);
         self.* = Venom{
@@ -69,13 +97,21 @@ pub const Venom = struct {
 
         self.state = .initializing;
 
-        // Initialize subsystems
+        // Initialize NVPrime subsystems
+        nvprime.init() catch |err| {
+            std.log.warn("NVPrime init failed: {}, running in degraded mode", .{err});
+            self.nvprime_initialized = false;
+        };
+        self.nvprime_initialized = true;
+
+        // Initialize runtime with nvprime integration
         self.runtime_ctx = try runtime.Context.init(allocator, .{
             .target_fps = config.target_fps,
             .vrr_enabled = config.vrr_enabled,
             .low_latency = config.low_latency,
         });
 
+        // Initialize latency engine
         self.latency_ctx = try latency.Context.init(allocator, .{
             .frame_queue_depth = config.frame_queue_depth,
             .prediction_enabled = config.frame_prediction,
@@ -94,6 +130,11 @@ pub const Venom = struct {
         }
         if (self.runtime_ctx) |ctx| {
             ctx.deinit();
+        }
+
+        // Cleanup NVPrime
+        if (self.nvprime_initialized) {
+            nvprime.deinit();
         }
 
         self.allocator.destroy(self);
@@ -132,6 +173,25 @@ pub const Venom = struct {
         }
     }
 
+    /// Get GPU information via nvprime
+    pub fn getGpuInfo(self: *const Venom) ?GpuInfo {
+        if (!self.nvprime_initialized) return null;
+
+        // Query GPU via nvprime.nvcaps
+        const caps = nvprime.nvcaps.getCapabilities() catch return null;
+
+        return GpuInfo{
+            .name = caps.name[0..caps.name_len],
+            .driver_version = nvprime.version.string,
+            .temperature = caps.temperature,
+            .power_watts = @as(f32, @floatFromInt(caps.power_usage)) / 1000.0,
+            .gpu_utilization = caps.gpu_utilization,
+            .memory_utilization = caps.memory_utilization,
+            .vrr_capable = true, // TODO: Query from nvsync
+            .hdr_capable = true, // TODO: Query from nvdisplay
+        };
+    }
+
     /// Get current latency stats
     pub fn getLatencyStats(self: *const Venom) latency.Stats {
         if (self.latency_ctx) |ctx| {
@@ -164,6 +224,31 @@ pub const Venom = struct {
         }
         if (self.latency_ctx) |ctx| {
             ctx.setLowLatency(enabled);
+        }
+    }
+
+    /// Set latency preset
+    pub fn setLatencyPreset(self: *Venom, preset: nvprime.nvruntime.nvlatency.LatencyPreset) void {
+        self.config.latency_preset = preset;
+        // Apply preset settings
+        switch (preset) {
+            .default => {
+                self.setLowLatency(false);
+                self.config.frame_queue_depth = 3;
+            },
+            .balanced => {
+                self.setLowLatency(true);
+                self.config.frame_queue_depth = 2;
+            },
+            .ultra => {
+                self.setLowLatency(true);
+                self.config.frame_queue_depth = 1;
+            },
+            .competitive => {
+                self.setLowLatency(true);
+                self.config.frame_queue_depth = 1;
+                self.config.frame_prediction = true;
+            },
         }
     }
 };
@@ -211,4 +296,8 @@ test "venom config defaults" {
 
 test "venom state transitions" {
     try std.testing.expectEqual(State.uninitialized, State.uninitialized);
+}
+
+test "nvprime version accessible" {
+    _ = nvprime.version.string;
 }
