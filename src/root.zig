@@ -27,7 +27,7 @@ pub const latency = @import("latency.zig");
 pub const compositor = @import("compositor.zig");
 pub const vulkan_layer = @import("vulkan_layer.zig");
 
-pub const version = "0.1.0-dev";
+pub const version = "0.1.0";
 
 /// VENOM runtime state
 pub const State = enum {
