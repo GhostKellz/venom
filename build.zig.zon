@@ -34,7 +34,7 @@
     .dependencies = .{
         .nvprime = .{
             .url = "https://github.com/ghostkellz/nvprime/archive/main.tar.gz",
-            .hash = "nvprime-0.0.0-h6TD4rOXAgC40PrruLHBgNAuoow2MubuPq_59OtnxUBl",
+            .hash = "nvprime-0.0.0-h6TD4tUuAwDi9hh7a8DlIvoXVjJ6MsgllDw3yBqiFLmF",
         },
     },
     .paths = .{

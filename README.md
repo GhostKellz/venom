@@ -142,10 +142,10 @@ zig build test
 
 ## Requirements
 
-- NVIDIA GPU (Maxwell or newer recommended)
-- NVIDIA driver 535+
-- Linux 5.15+ (6.x recommended for VRR)
-- Zig 0.14+
+- NVIDIA GPU (Turing or newer recommended for full features)
+- NVIDIA Open driver 590+ with GSP=1 (590.48.01 recommended)
+- Linux 6.x+ (6.12+ with CachyOS/EEVDF for best latency)
+- Zig 0.16+
 - Vulkan 1.3+
 
 ## Integration with NVPrime Stack
