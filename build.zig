@@ -72,6 +72,29 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
+    // Build the Vulkan layer shared library (libvenom_layer.so)
+    // This is an implicit Vulkan layer that hooks game frame timing
+    const layer_module = b.createModule(.{
+        .root_source_file = b.path("src/vulkan_layer_exports.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "nvprime", .module = nvprime_dep.module("nvprime") },
+        },
+    });
+    layer_module.linkSystemLibrary("c", .{});
+
+    const layer_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "venom_layer",
+        .root_module = layer_module,
+    });
+
+    b.installArtifact(layer_lib);
+
+    // Install the layer manifest
+    b.installFile("layer/VK_LAYER_VENOM_performance.json", "share/vulkan/implicit_layer.d/VK_LAYER_VENOM_performance.json");
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.

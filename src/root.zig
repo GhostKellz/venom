@@ -26,6 +26,8 @@ pub const runtime = @import("runtime.zig");
 pub const latency = @import("latency.zig");
 pub const compositor = @import("compositor.zig");
 pub const vulkan_layer = @import("vulkan_layer.zig");
+pub const hud = @import("hud.zig");
+pub const hud_renderer = @import("hud_renderer.zig");
 
 pub const version = "0.1.0";
 

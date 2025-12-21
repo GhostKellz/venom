@@ -13,8 +13,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const hud = @import("hud.zig");
+const hud_renderer = @import("hud_renderer.zig");
 
-pub const version = "0.1.0-dev";
+pub const version = "0.1.0";
 
 // ============================================================================
 // wlroots C Bindings (libwlroots 0.18+)
@@ -445,6 +447,11 @@ pub const Context = struct {
     stats: FrameStats = .{},
     last_frame_time: i128 = 0,
 
+    // HUD overlay (nvhud integration)
+    hud_ctx: ?*hud.Hud = null,
+    hud_renderer: ?hud_renderer.Renderer = null,
+    hud_enabled: bool = false,
+
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: Config) CompositorError!*Self {
@@ -466,9 +473,60 @@ pub const Context = struct {
         return self;
     }
 
+    /// Initialize HUD overlay (call after compositor is ready)
+    pub fn initHud(self: *Self, hud_config: hud.HudConfig) !void {
+        if (self.hud_ctx != null) return; // Already initialized
+
+        self.hud_ctx = hud.Hud.init(self.allocator, hud_config) catch |err| {
+            std.log.warn("HUD initialization failed: {}", .{err});
+            return err;
+        };
+
+        // Create renderer - use debug mode until wlroots is fully integrated
+        const render_mode: hud_renderer.TargetType = if (self.backend != null)
+            .wlroots_scene
+        else
+            .debug;
+        self.hud_renderer = hud_renderer.Renderer.init(self.allocator, render_mode);
+
+        self.hud_enabled = true;
+        std.log.info("Compositor HUD enabled (renderer: {})", .{render_mode});
+    }
+
+    /// Enable/disable HUD
+    pub fn setHudEnabled(self: *Self, enabled: bool) void {
+        self.hud_enabled = enabled;
+        if (self.hud_ctx) |h| {
+            h.setVisible(enabled);
+        }
+    }
+
+    /// Toggle HUD visibility
+    pub fn toggleHud(self: *Self) void {
+        if (self.hud_ctx) |h| {
+            h.toggle();
+            self.hud_enabled = h.visible;
+        }
+    }
+
+    /// Get HUD context
+    pub fn getHud(self: *Self) ?*hud.Hud {
+        return self.hud_ctx;
+    }
+
     pub fn deinit(self: *Self) void {
         if (self.state == .running) {
             self.stop();
+        }
+
+        // Cleanup HUD
+        if (self.hud_renderer) |*r| {
+            r.deinit();
+            self.hud_renderer = null;
+        }
+        if (self.hud_ctx) |h| {
+            h.deinit();
+            self.hud_ctx = null;
         }
 
         // Cleanup wlroots resources
@@ -628,6 +686,43 @@ pub const Context = struct {
                 self.stats.direct_scanout_frames += 1;
             } else {
                 self.stats.compositor_frames += 1;
+            }
+        }
+
+        // Update HUD
+        if (self.hud_ctx) |h| {
+            // Record frame time for FPS calculation
+            h.recordFrame();
+
+            // Update metrics periodically (nvhud handles timing internally)
+            h.updateMetrics();
+
+            // Update compositor stats for HUD
+            if (self.current_output_index < self.outputs.items.len) {
+                const output = self.outputs.items[self.current_output_index];
+                h.updateCompositorStats(.{
+                    .direct_scanout = output.direct_scanout_active,
+                    .vrr_active = output.vrr_enabled,
+                    .hdr_active = output.hdr_enabled,
+                    .tearing_active = self.stats.tearing_active,
+                    .refresh_hz = output.refreshHz(),
+                });
+            }
+
+            // Build HUD content and render commands
+            if (h.shouldRender()) {
+                const output = self.getCurrentOutput() orelse OutputInfo{
+                    .width = 1920,
+                    .height = 1080,
+                };
+                h.buildHud(output.width, output.height);
+
+                // Render HUD using the configured renderer
+                if (self.hud_renderer) |*renderer| {
+                    renderer.render(h, output.width, output.height) catch |err| {
+                        std.log.warn("HUD render failed: {}", .{err});
+                    };
+                }
             }
         }
     }

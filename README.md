@@ -140,6 +140,30 @@ zig build test
 ./zig-out/bin/venom --help
 ```
 
+## Vulkan Layer
+
+VENOM includes an implicit Vulkan layer for frame timing and VK_NV_low_latency2 integration.
+
+```bash
+# Enable VENOM layer for a game
+VK_ADD_IMPLICIT_LAYER_PATH=/path/to/venom/zig-out/share/vulkan/implicit_layer.d \
+VENOM_LAYER=1 ./game
+
+# Or install system-wide
+sudo cp zig-out/share/vulkan/implicit_layer.d/*.json /etc/vulkan/implicit_layer.d/
+sudo cp zig-out/lib/libvenom_layer.so /usr/lib/
+
+# Then just use VENOM_LAYER=1
+VENOM_LAYER=1 ./game
+```
+
+Layer features:
+- Frame timing with FPS stats (logged every 5 seconds)
+- Swapchain introspection (resolution, present mode)
+- VK_NV_low_latency2 passthrough and monitoring
+- VK_KHR_present_wait support
+- Vulkan 1.4 compatible
+
 ## Requirements
 
 - NVIDIA GPU (Turing or newer recommended for full features)
@@ -176,10 +200,10 @@ zig build test
 - [x] Latency engine scaffold
 - [x] Vulkan layer scaffold
 - [x] CLI interface
-- [ ] Wire up nvprime integration
+- [x] Wire up nvprime integration
+- [x] Vulkan layer implementation (frame timing, swapchain, VK_NV_low_latency2)
 - [ ] Wire up nvsync/nvlatency hooks
 - [ ] PrimeTime compositor integration
-- [ ] Vulkan layer implementation
 - [ ] nvhud overlay integration
 - [ ] Steam/Proton launch wrapper
 
