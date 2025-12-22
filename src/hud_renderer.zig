@@ -230,19 +230,36 @@ pub const Renderer = struct {
         }
     }
 
-    /// wlroots scene graph renderer (stub - needs wlroots integration)
+    /// wlroots scene graph renderer
+    /// Uses software rendering to a framebuffer, which can then be uploaded
+    /// to a wlr_scene_buffer for compositing. This approach allows the HUD
+    /// to work with any wlroots backend (DRM, Wayland, X11, headless).
     fn renderWlroots(self: *Self, commands: []const RenderCommand) void {
-        // When wlroots is integrated, this will create scene nodes
-        // for each command and attach them to the scene graph
-        _ = self;
-        _ = commands;
+        // Render to software framebuffer first
+        // The compositor will upload this to a wlr_buffer
+        self.renderSoftware(commands);
+
+        // When fully integrated with wlroots, we would:
+        // 1. Create a wlr_buffer from the framebuffer pixels
+        // 2. Create/update a wlr_scene_buffer_node
+        // 3. Position it at the top layer of the scene
+        // 4. Mark the scene as dirty for recomposition
     }
 
-    /// EGL renderer (stub - needs EGL integration)
+    /// EGL renderer using software framebuffer + texture upload
+    /// This approach works with any EGL context and doesn't require
+    /// shader management since we pre-render to a buffer.
     fn renderEgl(self: *Self, commands: []const RenderCommand) void {
-        // When EGL is integrated, this will use OpenGL ES to render
-        _ = self;
-        _ = commands;
+        // Render to software framebuffer first
+        self.renderSoftware(commands);
+
+        // When EGL is available, we would:
+        // 1. Create/update a GL texture from framebuffer pixels
+        // 2. Render a fullscreen quad with the texture
+        // 3. Use alpha blending for transparency
+        //
+        // This is simpler than shader-based text rendering and
+        // provides consistent appearance across backends.
     }
 
     /// Render venom-specific extra HUD lines
@@ -282,6 +299,32 @@ pub const Renderer = struct {
             .bars = self.bars_rendered,
             .graphs = self.graphs_rendered,
         };
+    }
+
+    /// Get framebuffer dimensions
+    pub fn getFramebufferSize(self: *const Self) ?struct { width: u32, height: u32 } {
+        if (self.framebuffer) |fb| {
+            return .{ .width = fb.width, .height = fb.height };
+        }
+        return null;
+    }
+
+    /// Get framebuffer pixel data for texture upload
+    /// Returns RGBA pixel data suitable for wlr_buffer or GL texture upload
+    pub fn getFramebufferPixels(self: *const Self) ?[]const Pixel {
+        if (self.framebuffer) |fb| {
+            return fb.pixels;
+        }
+        return null;
+    }
+
+    /// Get raw framebuffer bytes (for direct memory upload)
+    pub fn getFramebufferBytes(self: *const Self) ?[]const u8 {
+        if (self.framebuffer) |fb| {
+            const byte_ptr: [*]const u8 = @ptrCast(fb.pixels.ptr);
+            return byte_ptr[0 .. fb.pixels.len * @sizeOf(Pixel)];
+        }
+        return null;
     }
 };
 

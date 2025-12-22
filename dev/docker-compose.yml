@@ -1,0 +1,72 @@
+services:
+  venom-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    container_name: venom-dev
+    runtime: nvidia
+    volumes:
+      # Mount project directories
+      - ../:/workspace/venom:rw
+      - ../../nvprime:/workspace/nvprime:rw
+      - ../../nvhud:/workspace/nvhud:rw
+      - ../../nvvk:/workspace/nvvk:rw
+      - ../../nvlatency:/workspace/nvlatency:rw
+      - ../../nvsync:/workspace/nvsync:rw
+      - ../../nvshader:/workspace/nvshader:rw
+      - ../../nvfury:/workspace/nvfury:rw
+      # Mount host Zig compiler
+      - /opt/zig-0.16.0-dev:/opt/zig-0.16.0-dev:ro
+      # Wayland socket from host (for nested compositor)
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}:/tmp/host-runtime:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - DISPLAY=${DISPLAY}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+      - XDG_RUNTIME_DIR=/tmp/runtime
+      - WLR_BACKENDS=wayland
+      - WLR_RENDERER=vulkan
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video, compute, utility]
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/venom
+
+  # Headless test environment
+  venom-headless:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    container_name: venom-headless
+    runtime: nvidia
+    volumes:
+      - ../:/workspace/venom:rw
+      - ../../nvprime:/workspace/nvprime:rw
+      - ../../nvhud:/workspace/nvhud:rw
+      - /opt/zig-0.16.0-dev:/opt/zig-0.16.0-dev:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - XDG_RUNTIME_DIR=/tmp/runtime
+      - WLR_BACKENDS=headless
+      - WLR_RENDERER=vulkan
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video, compute, utility]
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/venom

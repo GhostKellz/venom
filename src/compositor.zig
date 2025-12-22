@@ -66,7 +66,7 @@ pub const WlrFunctions = struct {
     wl_display_add_socket_auto: ?*const fn (*wl_display) callconv(cc) ?[*:0]const u8 = null,
 
     // Backend
-    wlr_backend_autocreate: ?*const fn (*wl_event_loop, ?*anyopaque) callconv(cc) ?*wlr_backend = null,
+    wlr_backend_autocreate: ?*const fn (*wl_display, ?*anyopaque) callconv(cc) ?*wlr_backend = null,
     wlr_backend_destroy: ?*const fn (*wlr_backend) callconv(cc) void = null,
     wlr_backend_start: ?*const fn (*wlr_backend) callconv(cc) bool = null,
 
@@ -529,11 +529,21 @@ pub const Context = struct {
             self.hud_ctx = null;
         }
 
-        // Cleanup wlroots resources
+        // Cleanup wlroots resources (in reverse order of creation)
+        // Backend must be destroyed before display
+        if (self.backend) |backend| {
+            if (self.wlr.wlr_backend_destroy) |destroy| {
+                destroy(backend);
+            }
+            self.backend = null;
+        }
+
+        // Display destruction cleans up remaining resources
         if (self.display) |display| {
             if (self.wlr.wl_display_destroy) |destroy| {
                 destroy(display);
             }
+            self.display = null;
         }
 
         self.outputs.deinit(self.allocator);
@@ -602,22 +612,163 @@ pub const Context = struct {
 
         self.state = .initializing;
 
-        // TODO: Full wlroots initialization sequence:
-        // 1. wl_display_create()
-        // 2. wlr_backend_autocreate()
-        // 3. wlr_renderer_autocreate()
-        // 4. wlr_allocator_autocreate()
-        // 5. wlr_compositor_create()
-        // 6. wlr_scene_create()
-        // 7. wlr_output_layout_create()
-        // 8. wlr_xdg_shell_create()
-        // 9. wlr_layer_shell_v1_create()
-        // 10. wlr_seat_create()
-        // 11. Set up event listeners
-        // 12. wl_display_add_socket_auto()
-        // 13. wlr_backend_start()
+        // Check if wlroots is available
+        const has_wlroots = self.wlr.wl_display_create != null;
 
-        // Mock: Add a test output
+        if (has_wlroots) {
+            // Full wlroots initialization sequence
+            try self.initWlroots();
+        } else {
+            // Stub mode for development/testing without wlroots
+            std.log.info("Running in stub mode (no wlroots)", .{});
+            try self.initStubMode();
+        }
+
+        self.state = .running;
+    }
+
+    /// Full wlroots initialization
+    fn initWlroots(self: *Self) CompositorError!void {
+        std.log.info("Initializing wlroots compositor...", .{});
+
+        // 1. Create Wayland display
+        self.display = if (self.wlr.wl_display_create) |create|
+            create()
+        else
+            return CompositorError.DisplayCreateFailed;
+        if (self.display == null) return CompositorError.DisplayCreateFailed;
+        std.log.info("Created Wayland display", .{});
+
+        // Get event loop
+        const event_loop = if (self.wlr.wl_display_get_event_loop) |get|
+            get(self.display.?)
+        else
+            null;
+        if (event_loop == null) return CompositorError.DisplayCreateFailed;
+
+        // 2. Create backend (auto-detects DRM/headless/Wayland/X11)
+        self.backend = if (self.wlr.wlr_backend_autocreate) |create|
+            create(self.display.?, null)
+        else
+            return CompositorError.BackendCreateFailed;
+        if (self.backend == null) return CompositorError.BackendCreateFailed;
+        std.log.info("Created wlroots backend", .{});
+
+        // 3. Create renderer (auto-detects Vulkan/GLES2/Pixman)
+        self.renderer = if (self.wlr.wlr_renderer_autocreate) |create|
+            create(self.backend.?)
+        else
+            return CompositorError.RendererCreateFailed;
+        if (self.renderer == null) return CompositorError.RendererCreateFailed;
+        std.log.info("Created wlroots renderer", .{});
+
+        // Initialize renderer with display
+        if (self.wlr.wlr_renderer_init_wl_display) |init_display| {
+            if (!init_display(self.renderer.?, self.display.?)) {
+                return CompositorError.RendererCreateFailed;
+            }
+        }
+
+        // 4. Create allocator
+        self.wlr_allocator = if (self.wlr.wlr_allocator_autocreate) |create|
+            create(self.backend.?, self.renderer.?)
+        else
+            return CompositorError.AllocatorCreateFailed;
+        if (self.wlr_allocator == null) return CompositorError.AllocatorCreateFailed;
+        std.log.info("Created wlroots allocator", .{});
+
+        // 5. Create wlr_compositor (handles wl_surface, wl_region, wl_subcompositor)
+        self.compositor = if (self.wlr.wlr_compositor_create) |create|
+            create(self.display.?, 5, self.renderer.?) // version 5
+        else
+            null;
+        if (self.compositor == null) {
+            std.log.warn("wlr_compositor creation failed", .{});
+        } else {
+            std.log.info("Created wlr_compositor", .{});
+        }
+
+        // 6. Create scene graph for efficient rendering
+        self.scene = if (self.wlr.wlr_scene_create) |create|
+            create()
+        else
+            null;
+        if (self.scene != null) {
+            std.log.info("Created scene graph", .{});
+        }
+
+        // 7. Create output layout
+        self.output_layout = if (self.wlr.wlr_output_layout_create) |create|
+            create(self.display.?)
+        else
+            null;
+        if (self.output_layout != null) {
+            std.log.info("Created output layout", .{});
+
+            // Attach scene to output layout if both exist
+            if (self.scene != null and self.wlr.wlr_scene_attach_output_layout != null) {
+                _ = self.wlr.wlr_scene_attach_output_layout.?(self.scene.?, self.output_layout.?);
+            }
+        }
+
+        // 8. Create XDG shell (handles application windows)
+        self.xdg_shell = if (self.wlr.wlr_xdg_shell_create) |create|
+            create(self.display.?, 5) // version 5
+        else
+            null;
+        if (self.xdg_shell != null) {
+            std.log.info("Created XDG shell", .{});
+        }
+
+        // 9. Create seat (handles input devices - keyboard, mouse, touch)
+        self.seat = if (self.wlr.wlr_seat_create) |create|
+            create(self.display.?, "seat0")
+        else
+            null;
+        if (self.seat != null) {
+            std.log.info("Created seat 'seat0'", .{});
+        }
+
+        // 10. Create cursor
+        self.cursor = if (self.wlr.wlr_cursor_create) |create|
+            create()
+        else
+            null;
+
+        // 11. Create xcursor manager for cursor themes
+        self.xcursor_manager = if (self.wlr.wlr_xcursor_manager_create) |create|
+            create(null, 24) // default theme, 24px size
+        else
+            null;
+
+        // 12. Add socket for clients to connect
+        const socket = if (self.wlr.wl_display_add_socket_auto) |add_socket|
+            add_socket(self.display.?)
+        else
+            null;
+        if (socket) |s| {
+            const len = std.mem.len(s);
+            @memcpy(self.socket_name[0..len], s[0..len]);
+            self.socket_name_len = len;
+            std.log.info("Wayland socket: {s}", .{s});
+        } else {
+            return CompositorError.SocketCreateFailed;
+        }
+
+        // 13. Start the backend (this triggers output discovery)
+        if (self.wlr.wlr_backend_start) |start_fn| {
+            if (!start_fn(self.backend.?)) {
+                return CompositorError.BackendStartFailed;
+            }
+        }
+        std.log.info("Backend started successfully", .{});
+
+        std.log.info("VENOM compositor initialized", .{});
+    }
+
+    /// Stub mode initialization for development/testing
+    fn initStubMode(self: *Self) CompositorError!void {
+        // Add a test output
         var output = OutputInfo{
             .width = 2560,
             .height = 1440,
@@ -645,28 +796,37 @@ pub const Context = struct {
         const socket = "wayland-venom";
         @memcpy(self.socket_name[0..socket.len], socket);
         self.socket_name_len = socket.len;
-
-        self.state = .running;
     }
 
     pub fn stop(self: *Self) void {
         if (self.state != .running and self.state != .paused) return;
 
-        // TODO: Cleanup wlroots
-        // - wl_display_terminate()
+        // Terminate wlroots display
+        if (self.display) |display| {
+            if (self.wlr.wl_display_terminate) |terminate| {
+                terminate(display);
+            }
+        }
 
         self.state = .ready;
+        std.log.info("Compositor stopped", .{});
     }
 
     /// Run compositor event loop (blocking)
     pub fn run(self: *Self) CompositorError!void {
         if (self.state != .running) return CompositorError.InvalidState;
 
-        // TODO: wl_display_run(self.display)
-        // For now, simulate frame loop
-        while (self.state == .running) {
-            self.processFrame();
-            std.time.sleep(std.time.ns_per_ms * 6); // ~165fps
+        if (self.display != null and self.wlr.wl_display_run != null) {
+            // Use wlroots event loop
+            std.log.info("Starting wlroots event loop...", .{});
+            self.wlr.wl_display_run.?(self.display.?);
+        } else {
+            // Stub mode: simulate frame loop
+            std.log.info("Starting stub event loop...", .{});
+            while (self.state == .running) {
+                self.processFrame();
+                std.time.sleep(std.time.ns_per_ms * 6); // ~165fps
+            }
         }
     }
 
