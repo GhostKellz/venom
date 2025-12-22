@@ -333,6 +333,54 @@ var total_frames: u64 = 0;
 var avg_frame_time_ns: u64 = 0;
 var last_log_time_ns: u64 = 0;
 
+// Latency tracking (rolling buffer for stats)
+const LatencySample = struct {
+    frame_id: u64 = 0,
+    sim_to_present_us: u64 = 0,
+    gpu_render_us: u64 = 0,
+    total_latency_us: u64 = 0,
+};
+
+const LATENCY_BUFFER_SIZE = 120; // ~2 seconds at 60fps
+var latency_samples: [LATENCY_BUFFER_SIZE]LatencySample = [_]LatencySample{.{}} ** LATENCY_BUFFER_SIZE;
+var latency_index: usize = 0;
+var latency_count: usize = 0;
+var latency_sum_us: u64 = 0;
+var latency_gpu_sum_us: u64 = 0;
+
+fn recordLatencySample(sample: LatencySample) void {
+    // Remove old sample from sums if buffer is full
+    if (latency_count == LATENCY_BUFFER_SIZE) {
+        const old = latency_samples[latency_index];
+        if (latency_sum_us >= old.sim_to_present_us) {
+            latency_sum_us -= old.sim_to_present_us;
+        }
+        if (latency_gpu_sum_us >= old.gpu_render_us) {
+            latency_gpu_sum_us -= old.gpu_render_us;
+        }
+    }
+
+    // Store new sample
+    latency_samples[latency_index] = sample;
+    latency_sum_us += sample.sim_to_present_us;
+    latency_gpu_sum_us += sample.gpu_render_us;
+
+    latency_index = (latency_index + 1) % LATENCY_BUFFER_SIZE;
+    if (latency_count < LATENCY_BUFFER_SIZE) latency_count += 1;
+}
+
+fn getAverageLatencyMs() f32 {
+    if (latency_count == 0) return 0;
+    const avg_us: f32 = @floatFromInt(latency_sum_us / latency_count);
+    return avg_us / 1000.0;
+}
+
+fn getAverageGpuMs() f32 {
+    if (latency_count == 0) return 0;
+    const avg_us: f32 = @floatFromInt(latency_gpu_sum_us / latency_count);
+    return avg_us / 1000.0;
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -677,10 +725,14 @@ fn venom_vkQueuePresentKHR(
     // Log stats every 5 seconds
     if (now - last_log_time_ns > 5_000_000_000) {
         const fps = if (avg_frame_time_ns > 0) @divTrunc(@as(u64, 1_000_000_000), avg_frame_time_ns) else 0;
-        std.debug.print("[VENOM] {} frames, ~{} FPS, {d:.2}ms avg\n", .{
+        const avg_latency = getAverageLatencyMs();
+        const avg_gpu = getAverageGpuMs();
+        std.debug.print("[VENOM] {} frames, ~{} FPS, {d:.2}ms frame | latency: {d:.1}ms, GPU: {d:.1}ms\n", .{
             total_frames,
             fps,
             @as(f64, @floatFromInt(avg_frame_time_ns)) / 1_000_000.0,
+            avg_latency,
+            avg_gpu,
         });
         last_log_time_ns = now;
     }
@@ -762,10 +814,15 @@ fn venom_vkSetLatencyMarkerNV(
                 sc.last_render_submit_ns = now;
             },
             .present_start => {
-                // Can calculate sim-to-present latency
+                // Calculate sim-to-present latency and record it
                 if (sc.last_sim_start_ns > 0) {
                     const latency_us = (now - sc.last_sim_start_ns) / 1000;
-                    _ = latency_us; // TODO: Record to latency stats
+                    recordLatencySample(.{
+                        .frame_id = sc.current_present_id,
+                        .sim_to_present_us = latency_us,
+                        .gpu_render_us = sc.last_gpu_render_ns / 1000,
+                        .total_latency_us = latency_us,
+                    });
                 }
             },
             else => {},
@@ -790,7 +847,7 @@ fn venom_vkGetLatencyTimingsNV(
         next(device, swapchain, latency_marker_info);
     }
 
-    // Log timing data if available
+    // Process timing data and feed to latency engine
     if (latency_marker_info.pTimings) |timings| {
         if (latency_marker_info.timingCount > 0) {
             const t = timings[0];
@@ -803,9 +860,21 @@ fn venom_vkGetLatencyTimingsNV(
                     t.presentEndTimeUs - t.simStartTimeUs
                 else
                     0;
-                _ = gpu_time_us;
-                _ = total_us;
-                // TODO: Feed to latency engine
+
+                // Update swapchain GPU timing for next present marker
+                if (findSwapchain(swapchain)) |sc| {
+                    sc.last_gpu_render_ns = gpu_time_us * 1000;
+                }
+
+                // Record accurate timing from driver
+                if (total_us > 0) {
+                    recordLatencySample(.{
+                        .frame_id = t.presentID,
+                        .sim_to_present_us = total_us,
+                        .gpu_render_us = gpu_time_us,
+                        .total_latency_us = total_us,
+                    });
+                }
             }
         }
     }
@@ -927,6 +996,43 @@ export fn vkGetInstanceProcAddr(instance: VkInstance, name: [*:0]const u8) PFN_v
 
 export fn vkGetDeviceProcAddr(device: VkDevice, name: [*:0]const u8) PFN_vkVoidFunction {
     return venom_vkGetDeviceProcAddr(device, name);
+}
+
+// ============================================================================
+// Latency Query API (for other venom components)
+// ============================================================================
+
+/// Latency statistics structure for C interop
+pub const VenomLatencyStats = extern struct {
+    avg_latency_ms: f32,
+    avg_gpu_ms: f32,
+    frame_count: u64,
+    sample_count: u32,
+};
+
+/// Get current latency statistics
+export fn venom_get_latency_stats() VenomLatencyStats {
+    return .{
+        .avg_latency_ms = getAverageLatencyMs(),
+        .avg_gpu_ms = getAverageGpuMs(),
+        .frame_count = total_frames,
+        .sample_count = @intCast(latency_count),
+    };
+}
+
+/// Get average latency in milliseconds
+export fn venom_get_avg_latency_ms() f32 {
+    return getAverageLatencyMs();
+}
+
+/// Get average GPU render time in milliseconds
+export fn venom_get_avg_gpu_ms() f32 {
+    return getAverageGpuMs();
+}
+
+/// Get total frame count
+export fn venom_get_frame_count() u64 {
+    return total_frames;
 }
 
 // ============================================================================
