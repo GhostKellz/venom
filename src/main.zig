@@ -9,6 +9,8 @@
 const std = @import("std");
 const venom = @import("venom");
 const nvprime = @import("nvprime");
+const sessions = venom.sessions;
+const governor = venom.governor;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -37,6 +39,8 @@ pub fn main() !void {
         printLatencyInfo();
     } else if (std.mem.eql(u8, cmd, "compositor")) {
         try printCompositorInfo(allocator);
+    } else if (std.mem.eql(u8, cmd, "dlss")) {
+        try printDlssInfo();
     } else if (std.mem.eql(u8, cmd, "run")) {
         if (args.len < 3) {
             std.debug.print("Error: No game specified\n", .{});
@@ -67,22 +71,41 @@ fn printUsage() void {
         \\  venom run <game> [args...]   Run game through VENOM runtime
         \\  venom info                   Show system information
         \\  venom gpu                    Show GPU details (via nvprime)
+        \\  venom dlss                   Show DLSS 4.5 capabilities & presets
         \\  venom latency                Show latency presets
         \\  venom compositor             Show compositor capabilities
         \\  venom version                Show version
         \\  venom help                   Show this help
         \\
         \\Options (for run):
-        \\  --fps=<N>         Limit framerate to N FPS
-        \\  --no-vrr          Disable VRR (G-Sync/FreeSync)
-        \\  --no-hdr          Disable HDR passthrough
-        \\  --low-latency     Enable low-latency mode (default)
-        \\  --hud             Show performance overlay
+        \\  --fps=<N>                 Limit framerate to N FPS
+        \\  --no-vrr                  Disable VRR (G-Sync/FreeSync)
+        \\  --no-hdr                  Disable HDR passthrough
+        \\  --low-latency             Prefer low-latency mode (default)
+        \\  --no-low-latency          Disable Reflex optimizations
+        \\  --hud                     Show performance overlay
+        \\  --gamescope               Launch inside Gamescope session
+        \\  --gamescope-size=<WxH>    Override Gamescope resolution
+        \\  --gamescope-refresh=<Hz>  Set Gamescope refresh rate
+        \\  --no-gamescope-vrr        Disable Gamescope adaptive sync
+        \\  --gamescope-flag=<flag>   Pass extra flag to Gamescope (repeat)
+        \\  --no-governor             Skip CPU governor override
+        \\  --force-governor=<name>   Force specific governor value
+        \\
+        \\DLSS Options (RTX 20+):
+        \\  --dlss=<preset>           DLSS preset (quality, balanced, performance,
+        \\                            mfg_2x, mfg_3x, mfg_4x, dynamic, max_fps)
+        \\  --dlss-quality=<mode>     Explicit quality (ultra_performance, performance,
+        \\                            balanced, quality, ultra_quality, dlaa)
+        \\  --frame-gen=<mode>        Frame generation (enabled, multi_2x, multi_3x,
+        \\                            multi_4x, dynamic, dynamic_6x) [RTX 40/50]
+        \\  --dlss-rr                 Enable DLSS Ray Reconstruction [RTX 40+]
         \\
         \\Examples:
         \\  venom run ./game
-        \\  venom run steam steam://rungameid/1234
-        \\  venom run --fps=144 ./game
+        \\  venom run --dlss=quality --frame-gen=enabled ./game
+        \\  venom run --dlss=dynamic --fps=165 ./game  # RTX 50 Dynamic MFG
+        \\  venom run --gamescope --fps=144 steam steam://rungameid/1234
         \\
         \\
     , .{});
@@ -279,8 +302,233 @@ fn printLatencyInfo() void {
     std.debug.print("Usage: venom run --latency=<preset> <game>\n", .{});
 }
 
-fn runGame(allocator: std.mem.Allocator, game_args: []const []const u8) !void {
-    std.debug.print("VENOM: Initializing runtime...\n", .{});
+fn printDlssInfo() !void {
+    const nvdlss = nvprime.nvdlss;
+
+    std.debug.print("VENOM DLSS Info (via nvprime.nvdlss)\n", .{});
+    std.debug.print("====================================\n\n", .{});
+
+    // Detect GPU and DLSS version
+    const gpu_gen = nvdlss.detectGpuGeneration();
+    const caps = nvdlss.GpuCapabilities.fromGeneration(gpu_gen);
+
+    std.debug.print("GPU Generation: {s}\n", .{gpu_gen.name()});
+    std.debug.print("Model Type:     {s}\n", .{caps.model_type.description()});
+    std.debug.print("\n", .{});
+
+    // Version info
+    if (nvdlss.getVersion()) |version| {
+        std.debug.print("DLSS Version:   {d}.{d}.{d}\n", .{ version.major, version.minor, version.patch });
+    }
+    std.debug.print("\n", .{});
+
+    // Feature support
+    std.debug.print("Feature Support:\n", .{});
+    std.debug.print("  DLSS Super Resolution: {s}\n", .{if (caps.supports_dlss_sr) "Yes" else "No"});
+    std.debug.print("  DLSS Frame Gen:        {s}\n", .{if (caps.supports_dlss_fg) "Yes (RTX 40+)" else "No"});
+    std.debug.print("  DLSS Ray Recon:        {s}\n", .{if (caps.supports_dlss_rr) "Yes (DLSS 3.5+)" else "No"});
+    std.debug.print("  Multi Frame Gen:       {s}\n", .{if (caps.supports_dlss_mfg) "Yes (RTX 50)" else "No"});
+    std.debug.print("  Dynamic MFG:           {s}\n", .{if (caps.supports_dynamic_mfg) "Yes (DLSS 4.5+)" else "No"});
+    std.debug.print("  RTX Video SR:          {s}\n", .{if (caps.supports_video_sr) "Yes" else "No"});
+    std.debug.print("  RTX HDR:               {s}\n", .{if (caps.supports_rtx_hdr) "Yes" else "No"});
+    std.debug.print("\n", .{});
+
+    // Quality modes
+    std.debug.print("Quality Modes:\n", .{});
+    inline for (std.meta.fields(nvdlss.QualityMode)) |field| {
+        const mode: nvdlss.QualityMode = @enumFromInt(field.value);
+        std.debug.print("  {s}: {s}\n", .{ field.name, mode.description() });
+    }
+    std.debug.print("\n", .{});
+
+    // Frame gen modes
+    std.debug.print("Frame Generation Modes:\n", .{});
+    inline for (std.meta.fields(nvdlss.FrameGenMode)) |field| {
+        const mode: nvdlss.FrameGenMode = @enumFromInt(field.value);
+        const rtx50_note = if (mode.requiresRtx50()) " [RTX 50]" else "";
+        std.debug.print("  {s}: {s}{s}\n", .{ field.name, mode.description(), rtx50_note });
+    }
+    std.debug.print("\n", .{});
+
+    // Presets
+    std.debug.print("Presets:\n", .{});
+    const preset_names = [_][]const u8{
+        "quality", "balanced", "performance", "ultra_performance",
+        "mfg_2x", "mfg_3x", "mfg_4x", "dynamic", "max_fps",
+    };
+    for (preset_names) |name| {
+        const cfg = nvdlss.DlssConfig.fromPreset(name);
+        const fg_name = @tagName(cfg.frame_gen);
+        std.debug.print("  {s}: quality={s}, frame_gen={s}\n", .{
+            name,
+            @tagName(cfg.quality),
+            fg_name,
+        });
+    }
+    std.debug.print("\n", .{});
+
+    // Recommended for current GPU
+    const recommended_fg = nvdlss.getRecommendedFrameGen(gpu_gen, 165);
+    std.debug.print("Recommended (165Hz): {s}\n", .{recommended_fg.description()});
+
+    std.debug.print("\nUsage: venom run --dlss=<preset> --frame-gen=<mode> <game>\n", .{});
+}
+
+const RunOptions = struct {
+    fps: ?u32 = null,
+    vrr: bool = true,
+    hdr: bool = true,
+    low_latency: bool = true,
+    show_hud: bool = false,
+    gamescope_enabled: bool = false,
+    gamescope_size: ?struct { w: u32, h: u32 } = null,
+    gamescope_refresh_hz: ?u32 = null,
+    gamescope_vrr: bool = true,
+    gamescope_extra_flags: []const []const u8 = &.{},
+    force_governor: GovernorMode = .auto,
+    // DLSS options
+    dlss_preset: ?[]const u8 = null, // DLSS preset name (quality, performance, etc)
+    dlss_quality: ?[]const u8 = null, // Explicit quality mode
+    frame_gen: ?[]const u8 = null, // Frame gen mode (enabled, multi_2x, dynamic, etc)
+    ray_reconstruction: bool = false, // Enable DLSS Ray Reconstruction
+};
+
+const GovernorMode = union(enum) {
+    auto,
+    skip,
+    force: []const u8,
+};
+
+fn parseRunOptions(allocator: std.mem.Allocator, args: []const []const u8) !struct {
+    opts: RunOptions,
+    game_start: []const []const u8,
+} {
+    var opts = RunOptions{};
+    var idx: usize = 0;
+
+    var extra_flags: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer extra_flags.deinit(allocator);
+
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (!std.mem.startsWith(u8, arg, "--")) break;
+
+        if (std.mem.startsWith(u8, arg, "--fps=")) {
+            const value = arg[6..];
+            opts.fps = try std.fmt.parseInt(u32, value, 10);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-vrr")) {
+            opts.vrr = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-hdr")) {
+            opts.hdr = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--low-latency")) {
+            opts.low_latency = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-low-latency")) {
+            opts.low_latency = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--hud")) {
+            opts.show_hud = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--gamescope")) {
+            opts.gamescope_enabled = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--gamescope-size=")) {
+            const value = arg[17..];
+            if (std.mem.indexOfScalar(u8, value, 'x')) |split| {
+                const width = try std.fmt.parseInt(u32, value[0..split], 10);
+                const height = try std.fmt.parseInt(u32, value[split + 1 ..], 10);
+                opts.gamescope_size = .{ .w = width, .h = height };
+            }
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--gamescope-refresh=")) {
+            const value = arg[20..];
+            opts.gamescope_refresh_hz = try std.fmt.parseInt(u32, value, 10);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-gamescope-vrr")) {
+            opts.gamescope_vrr = false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--gamescope-flag=")) {
+            const value = arg[17..];
+            if (value.len > 0) {
+                try extra_flags.append(allocator, value);
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-governor")) {
+            opts.force_governor = .skip;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--force-governor=")) {
+            opts.force_governor = .{ .force = arg[17..] };
+            continue;
+        }
+        // DLSS options
+        if (std.mem.startsWith(u8, arg, "--dlss=")) {
+            opts.dlss_preset = arg[7..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--dlss-quality=")) {
+            opts.dlss_quality = arg[15..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--frame-gen=")) {
+            opts.frame_gen = arg[12..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ray-reconstruction") or std.mem.eql(u8, arg, "--dlss-rr")) {
+            opts.ray_reconstruction = true;
+            continue;
+        }
+
+        // Unknown option, stop parsing and treat as game command
+        break;
+    }
+
+    if (idx >= args.len) return error.NoGameSpecified;
+
+    opts.gamescope_extra_flags = try extra_flags.toOwnedSlice(allocator);
+
+    return .{ .opts = opts, .game_start = args[idx..] };
+}
+
+fn runGame(allocator: std.mem.Allocator, run_args: []const []const u8) !void {
+    const parsed = parseRunOptions(allocator, run_args) catch |err| {
+        std.debug.print("VENOM: Failed to parse options: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(parsed.opts.gamescope_extra_flags);
+
+    var governor_state = governor.GovernorState.init(allocator);
+    defer governor_state.deinit();
+
+    if (parsed.game_start.len == 0) {
+        std.debug.print("VENOM: No game specified after options\n", .{});
+        return error.NoGameSpecified;
+    }
+
+    const game_args = parsed.game_start;
+    const user_opts = parsed.opts;
+
+    std.debug.print("VENOM: Parsing runtime options...\n", .{});
+
+    // Detect nested sessions early
+    const nested_session = sessions.detectNestedSession();
+    if (nested_session != .none) {
+        std.debug.print("VENOM: Detected nested session: {s}\n", .{@tagName(nested_session)});
+    }
 
     // Initialize nvprime for GPU queries
     nvprime.nvml.init() catch |err| {
@@ -314,23 +562,134 @@ fn runGame(allocator: std.mem.Allocator, game_args: []const []const u8) !void {
         }
     } else |_| {}
 
-    const config = venom.Config{
-        .low_latency = supports_reflex,
-        .vrr_enabled = true,
-        .hdr_enabled = true,
-        .latency_preset = if (supports_reflex) .balanced else .default,
+    var runtime_config = venom.Config{
+        .low_latency = user_opts.low_latency,
+        .target_fps = user_opts.fps orelse 0,
+        .vrr_enabled = user_opts.vrr,
+        .hdr_enabled = user_opts.hdr,
+        .show_hud = user_opts.show_hud,
+        .latency_preset = if (user_opts.low_latency) .balanced else .default,
     };
 
-    const v = try venom.Venom.init(allocator, config);
+    if (!supports_reflex and runtime_config.low_latency) {
+        std.debug.print("VENOM: Disabling low-latency mode (Reflex unsupported)\n", .{});
+        runtime_config.low_latency = false;
+        runtime_config.latency_preset = .default;
+    }
+
+    if (user_opts.force_governor != .skip) {
+        governor_state = governor.captureState(allocator) catch |err| blk: {
+            if (err == error.NotAvailable) break :blk governor_state;
+            std.debug.print("VENOM: Governor capture failed: {s}\n", .{@errorName(err)});
+            break :blk governor_state;
+        };
+        switch (user_opts.force_governor) {
+            .force => |value| {
+                if (value.len > 0) {
+                    governor.setGovernor(&governor_state, value) catch |err| {
+                        std.debug.print("VENOM: Governor set failed: {s}\n", .{@errorName(err)});
+                    };
+                }
+            },
+            .auto => governor.setPerformance(&governor_state) catch |err| {
+                std.debug.print("VENOM: Governor performance set failed: {s}\n", .{@errorName(err)});
+            },
+            else => {},
+        }
+    }
+
+    const v = try venom.Venom.init(allocator, runtime_config);
     defer v.deinit();
 
     std.debug.print("VENOM: Starting runtime...\n", .{});
     try v.start();
 
-    std.debug.print("VENOM: Launching game: {s}\n", .{game_args[0]});
-    try v.runGame(game_args);
+    var gamescope_session = sessions.GamescopeSession.init(allocator);
+    defer gamescope_session.deinit();
+    var gamescope_cmd: sessions.GamescopeCommand = .{};
+    defer gamescope_cmd.deinit(allocator);
+
+    const launch_args = if (user_opts.gamescope_enabled) blk: {
+        if (gamescope_session.isRunning()) {
+            std.debug.print("VENOM: Gamescope already running, skipping nested launch\n", .{});
+            break :blk game_args;
+        }
+        if (!sessions.isGamescopePresent()) {
+            std.debug.print("VENOM: --gamescope requested but binary missing\n", .{});
+            break :blk game_args;
+        }
+
+        const cmd = sessions.buildGamescopeCommand(allocator, .{
+            .width = if (user_opts.gamescope_size) |sz| sz.w else null,
+            .height = if (user_opts.gamescope_size) |sz| sz.h else null,
+            .refresh_hz = user_opts.gamescope_refresh_hz,
+            .hdr = runtime_config.hdr_enabled,
+            .vrr = user_opts.gamescope_vrr,
+            .extra_flags = user_opts.gamescope_extra_flags,
+        }, game_args) catch |err| {
+            std.debug.print("VENOM: Failed to build Gamescope command: {s}\n", .{@errorName(err)});
+            break :blk game_args;
+        };
+        gamescope_cmd = cmd;
+
+        std.debug.print("VENOM: Launching Gamescope wrapper\n", .{});
+        gamescope_session.start(cmd.args) catch |err| {
+            std.debug.print("VENOM: Gamescope startup failed: {s}\n", .{@errorName(err)});
+            break :blk game_args;
+        };
+        break :blk cmd.args;
+    } else game_args;
+
+    const launch_target = launch_args[launch_args.len - game_args.len];
+    std.debug.print("VENOM: Launching game: {s}\n", .{launch_target});
+    v.runGame(launch_args) catch |err| {
+        std.debug.print("VENOM: Game launch failed: {s}\n", .{@errorName(err)});
+        if (gamescope_session.isRunning()) gamescope_session.stop();
+        return err;
+    };
 
     std.debug.print("VENOM: Game launched. Monitoring...\n", .{});
+
+    if (user_opts.gamescope_enabled and gamescope_session.isRunning()) {
+        std.debug.print("VENOM: Waiting for Gamescope session to exit\n", .{});
+        gamescope_session.wait() catch |err| {
+            std.debug.print("VENOM: Gamescope wait failed: {s}\n", .{@errorName(err)});
+        };
+    }
+
+    // Build DLSS configuration string
+    const nvdlss = nvprime.nvdlss;
+    var dlss_config: ?nvdlss.DlssConfig = null;
+
+    if (user_opts.dlss_preset) |preset| {
+        dlss_config = nvdlss.DlssConfig.fromPreset(preset);
+        std.debug.print("VENOM: DLSS preset '{s}' applied\n", .{preset});
+    }
+
+    // Parse frame-gen override if provided
+    if (user_opts.frame_gen) |fg_str| {
+        if (dlss_config == null) dlss_config = .{};
+        if (std.mem.eql(u8, fg_str, "enabled")) {
+            dlss_config.?.frame_gen = .enabled;
+        } else if (std.mem.eql(u8, fg_str, "multi_2x")) {
+            dlss_config.?.frame_gen = .multi_2x;
+        } else if (std.mem.eql(u8, fg_str, "multi_3x")) {
+            dlss_config.?.frame_gen = .multi_3x;
+        } else if (std.mem.eql(u8, fg_str, "multi_4x")) {
+            dlss_config.?.frame_gen = .multi_4x;
+        } else if (std.mem.eql(u8, fg_str, "dynamic")) {
+            dlss_config.?.frame_gen = .dynamic;
+        } else if (std.mem.eql(u8, fg_str, "dynamic_6x")) {
+            dlss_config.?.frame_gen = .dynamic_6x;
+        }
+        std.debug.print("VENOM: Frame Gen mode: {s}\n", .{@tagName(dlss_config.?.frame_gen)});
+    }
+
+    if (user_opts.ray_reconstruction) {
+        if (dlss_config == null) dlss_config = .{};
+        dlss_config.?.ray_reconstruction = true;
+        std.debug.print("VENOM: DLSS Ray Reconstruction enabled\n", .{});
+    }
 
     // Print active configuration
     std.debug.print(
@@ -347,17 +706,34 @@ fn runGame(allocator: std.mem.Allocator, game_args: []const []const u8) !void {
         \\  Reflex Ready:   {s}
         \\  DLSS Ready:     {s}
         \\
-        \\
     , .{
-        if (config.low_latency) "Enabled (Reflex)" else "Disabled",
-        @tagName(config.latency_preset),
-        if (config.vrr_enabled) "Enabled" else "Disabled",
-        if (config.hdr_enabled) "Enabled" else "Disabled",
-        if (config.target_fps == 0) "Unlimited" else "Limited",
+        if (runtime_config.low_latency) "Enabled" else "Disabled",
+        @tagName(runtime_config.latency_preset),
+        if (runtime_config.vrr_enabled) "Enabled" else "Disabled",
+        if (runtime_config.hdr_enabled) "Enabled" else "Disabled",
+        if (runtime_config.target_fps == 0) "Unlimited" else "Limited",
         if (gpu_detected) "Yes" else "No",
         if (supports_reflex) "Yes" else "No",
         if (supports_dlss) "Yes" else "No",
     });
+
+    // Print DLSS configuration if set
+    if (dlss_config) |cfg| {
+        std.debug.print(
+            \\DLSS Configuration:
+            \\  Quality Mode:   {s}
+            \\  Frame Gen:      {s}
+            \\  Ray Recon:      {s}
+            \\
+            \\
+        , .{
+            @tagName(cfg.quality),
+            cfg.frame_gen.description(),
+            if (cfg.ray_reconstruction) "Enabled" else "Disabled",
+        });
+    } else {
+        std.debug.print("\n", .{});
+    }
 }
 
 test "main compiles" {

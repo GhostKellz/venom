@@ -18,6 +18,8 @@ pub const Config = struct {
     target_fps: u32 = 0,
     vrr_enabled: bool = true,
     low_latency: bool = true,
+    hud_enabled: bool = false,
+    hdr_enabled: bool = true,
 };
 
 /// Frame statistics
@@ -126,10 +128,14 @@ pub const Context = struct {
         // Set NVIDIA gaming environment variables
         try child_env.put("__GL_GSYNC_ALLOWED", if (self.config.vrr_enabled) "1" else "0");
         try child_env.put("__GL_VRR_ALLOWED", if (self.config.vrr_enabled) "1" else "0");
+        try child_env.put("__GL_HDR_MODE", if (self.config.hdr_enabled) "scRGB" else "Disabled");
 
         if (self.config.low_latency) {
             try child_env.put("__GL_MaxFramesAllowed", "1");
             try child_env.put("DXVK_FRAME_RATE", "0"); // Let VENOM handle limiting
+        }
+        if (!self.config.hud_enabled) {
+            try child_env.put("VENOMHUD_DISABLED", "1");
         }
 
         // Spawn game

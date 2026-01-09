@@ -28,6 +28,9 @@ pub const compositor = @import("compositor.zig");
 pub const vulkan_layer = @import("vulkan_layer.zig");
 pub const hud = @import("hud.zig");
 pub const hud_renderer = @import("hud_renderer.zig");
+pub const sessions = @import("sessions.zig");
+pub const governor = @import("governor.zig");
+pub const numa = @import("numa.zig");
 
 pub const version = "0.1.0";
 
@@ -111,6 +114,8 @@ pub const Venom = struct {
             .target_fps = config.target_fps,
             .vrr_enabled = config.vrr_enabled,
             .low_latency = config.low_latency,
+            .hud_enabled = config.show_hud,
+            .hdr_enabled = config.hdr_enabled,
         });
 
         // Initialize latency engine

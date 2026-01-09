@@ -15,8 +15,100 @@ const std = @import("std");
 const builtin = @import("builtin");
 const hud = @import("hud.zig");
 const hud_renderer = @import("hud_renderer.zig");
+const nvprime = @import("nvprime");
+
+const c = @cImport({
+    @cInclude("dlfcn.h");
+});
 
 pub const version = "0.1.0";
+
+const wlroots_library_names = [_][*:0]const u8{
+    "libwlroots-0.18.so",
+    "libwlroots-0.17.so",
+    "libwlroots.so.12",
+    "libwlroots.so",
+};
+
+const wayland_server_library_names = [_][*:0]const u8{
+    "libwayland-server.so.0",
+    "libwayland-server.so",
+};
+
+const version_unknown = "unknown";
+const version_018 = "0.18.x";
+const version_017 = "0.17.x";
+
+pub const WlrootsStatus = struct {
+    available: bool = false,
+    library_name: []const u8 = "",
+    version: []const u8 = version_unknown,
+    message: []const u8 = "",
+    wayland_session: bool = false,
+    wayland_display: []const u8 = "",
+    xdg_session_type: []const u8 = "",
+};
+
+var cached_wlroots_status: ?WlrootsStatus = null;
+
+fn envOrEmpty(name: [*:0]const u8) []const u8 {
+    if (std.posix.getenv(std.mem.span(name))) |value| {
+        return std.mem.sliceTo(value, 0);
+    }
+    return "";
+}
+
+fn inferWlrootsVersion(name: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, name, "0.18")) |_| {
+        return version_018;
+    }
+    if (std.mem.indexOf(u8, name, "0.17")) |_| {
+        return version_017;
+    }
+    return version_unknown;
+}
+
+fn probeWlrootsStatus() WlrootsStatus {
+    var status = WlrootsStatus{
+        .wayland_session = isWaylandSession(),
+        .wayland_display = envOrEmpty("WAYLAND_DISPLAY"),
+        .xdg_session_type = envOrEmpty("XDG_SESSION_TYPE"),
+    };
+
+    for (wlroots_library_names) |lib_name| {
+        const handle = c.dlopen(lib_name, c.RTLD_LAZY);
+        if (handle != null) {
+            status.available = true;
+            status.library_name = std.mem.sliceTo(lib_name, 0);
+            status.version = inferWlrootsVersion(status.library_name);
+            // Optional: attempt to read wlroots version symbol if provided
+            const version_symbol = c.dlsym(handle, "wlroots_version");
+            if (version_symbol) |symbol_ptr| {
+                const version_z = @as([*:0]const u8, @ptrCast(symbol_ptr));
+                status.version = std.mem.sliceTo(version_z, 0);
+            }
+            _ = c.dlclose(handle);
+            break;
+        }
+    }
+
+    if (!status.available) {
+        status.message = "wlroots shared library not found";
+    } else if (!status.wayland_session) {
+        status.message = "WAYLAND_DISPLAY not set (non-Wayland session)";
+    }
+
+    return status;
+}
+
+pub fn getWlrootsStatus() WlrootsStatus {
+    if (cached_wlroots_status) |status| {
+        return status;
+    }
+    const status = probeWlrootsStatus();
+    cached_wlroots_status = status;
+    return status;
+}
 
 // ============================================================================
 // wlroots C Bindings (libwlroots 0.18+)
@@ -88,12 +180,17 @@ pub const WlrFunctions = struct {
     wlr_output_layout_create: ?*const fn (*wl_display) callconv(cc) ?*wlr_output_layout = null,
     wlr_output_enable: ?*const fn (*wlr_output, bool) callconv(cc) void = null,
     wlr_output_commit: ?*const fn (*wlr_output) callconv(cc) bool = null,
+    wlr_output_set_mode: ?*const fn (*wlr_output, ?*anyopaque) callconv(cc) void = null,
+    wlr_output_preferred_mode: ?*const fn (*wlr_output) callconv(cc) ?*anyopaque = null,
 
     // XDG Shell
     wlr_xdg_shell_create: ?*const fn (*wl_display, u32) callconv(cc) ?*wlr_xdg_shell = null,
+    wlr_xdg_toplevel_set_fullscreen: ?*const fn (*wlr_xdg_toplevel, bool) callconv(cc) u32 = null,
+    wlr_xdg_toplevel_send_close: ?*const fn (*wlr_xdg_toplevel) callconv(cc) void = null,
 
     // Seat
     wlr_seat_create: ?*const fn (*wl_display, [*:0]const u8) callconv(cc) ?*wlr_seat = null,
+    wlr_seat_keyboard_notify_enter: ?*const fn (*wlr_seat, *wlr_surface, ?[*]u32, usize, ?*anyopaque) callconv(cc) void = null,
 
     // Cursor
     wlr_cursor_create: ?*const fn () callconv(cc) ?*wlr_cursor = null,
@@ -452,6 +549,9 @@ pub const Context = struct {
     hud_renderer: ?hud_renderer.Renderer = null,
     hud_enabled: bool = false,
 
+    // XDG toplevel tracking for window management
+    xdg_toplevels: std.AutoHashMapUnmanaged(u64, *wlr_xdg_toplevel) = .{},
+
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: Config) CompositorError!*Self {
@@ -552,20 +652,8 @@ pub const Context = struct {
     }
 
     fn loadWlroots(self: *Self) !void {
-        const c = @cImport({
-            @cInclude("dlfcn.h");
-        });
-
-        // Try to load wlroots library
-        const lib_names = [_][*:0]const u8{
-            "libwlroots-0.18.so",
-            "libwlroots-0.17.so",
-            "libwlroots.so.12",
-            "libwlroots.so",
-        };
-
         var handle: ?*anyopaque = null;
-        for (lib_names) |lib_name| {
+        for (wlroots_library_names) |lib_name| {
             handle = c.dlopen(lib_name, c.RTLD_LAZY);
             if (handle != null) {
                 std.log.info("Loaded wlroots: {s}", .{lib_name});
@@ -578,8 +666,11 @@ pub const Context = struct {
             return;
         }
 
-        // Load wayland-server functions
-        const wl_lib = c.dlopen("libwayland-server.so.0", c.RTLD_LAZY);
+        var wl_lib: ?*anyopaque = null;
+        for (wayland_server_library_names) |wl_name| {
+            wl_lib = c.dlopen(wl_name, c.RTLD_LAZY);
+            if (wl_lib != null) break;
+        }
         if (wl_lib != null) {
             self.wlr.wl_display_create = @ptrCast(c.dlsym(wl_lib, "wl_display_create"));
             self.wlr.wl_display_destroy = @ptrCast(c.dlsym(wl_lib, "wl_display_destroy"));
@@ -589,7 +680,6 @@ pub const Context = struct {
             self.wlr.wl_display_add_socket_auto = @ptrCast(c.dlsym(wl_lib, "wl_display_add_socket_auto"));
         }
 
-        // Load wlroots functions
         self.wlr.wlr_backend_autocreate = @ptrCast(c.dlsym(handle, "wlr_backend_autocreate"));
         self.wlr.wlr_backend_destroy = @ptrCast(c.dlsym(handle, "wlr_backend_destroy"));
         self.wlr.wlr_backend_start = @ptrCast(c.dlsym(handle, "wlr_backend_start"));
@@ -931,23 +1021,46 @@ pub const Context = struct {
 
     pub fn setVrr(self: *Self, state: VrrState) void {
         self.config.vrr_state = state;
-        // TODO: Apply to DRM connector via wlr_output
+
         if (self.current_output_index < self.outputs.items.len) {
-            self.outputs.items[self.current_output_index].vrr_enabled = (state != .disabled);
+            const enabled = (state != .disabled);
+            self.outputs.items[self.current_output_index].vrr_enabled = enabled;
+
+            // Apply VRR via nvsync integration
+            const nvsync_mod = nvprime.nvruntime.nvsync;
+            if (enabled) {
+                nvsync_mod.enable(null) catch |err| {
+                    std.log.warn("Failed to enable VRR via nvsync: {}", .{err});
+                };
+            } else {
+                nvsync_mod.disable(null) catch |err| {
+                    std.log.warn("Failed to disable VRR via nvsync: {}", .{err});
+                };
+            }
         }
     }
 
     pub fn setHdr(self: *Self, state: HdrState) void {
         self.config.hdr_state = state;
-        // TODO: Apply HDR metadata via DRM
+
         if (self.current_output_index < self.outputs.items.len) {
-            self.outputs.items[self.current_output_index].hdr_enabled = (state != .disabled);
+            const enabled = (state != .disabled);
+            self.outputs.items[self.current_output_index].hdr_enabled = enabled;
+
+            // HDR control via DRM property would go through nvsync/nvdisplay
+            // For now, log the state change
+            std.log.info("HDR state changed to: {s}", .{state.description()});
         }
     }
 
     pub fn setHdrMetadata(self: *Self, metadata: HdrMetadata) void {
         self.config.hdr_metadata = metadata;
-        // TODO: Apply to DRM connector
+
+        // HDR metadata would be applied via DRM blob property
+        std.log.debug("HDR metadata updated: max_lum={d}, min_lum={d}", .{
+            metadata.max_luminance,
+            metadata.min_luminance,
+        });
     }
 
     pub fn setDirectScanout(self: *Self, enabled: bool) void {
@@ -956,18 +1069,35 @@ pub const Context = struct {
 
     pub fn setTearingMode(self: *Self, mode: TearingMode) void {
         self.config.tearing_mode = mode;
-        // TODO: Apply to wp_tearing_control
+        self.stats.tearing_active = (mode != .disabled);
+
+        // Tearing control is handled per-surface via wp_tearing_control_v1
+        // The compositor needs to honor the tearing hint from the client
+        std.log.info("Tearing mode set to: {s}", .{mode.description()});
     }
 
     pub fn setRefreshRate(self: *Self, refresh_mhz: u32) CompositorError!void {
         self.config.refresh_rate_mhz = refresh_mhz;
-        // TODO: Apply mode change via wlr_output_set_mode
+
+        // Apply via wlroots if available
+        // In full implementation, find matching mode and apply
+        if (self.current_output_index < self.outputs.items.len) {
+            self.outputs.items[self.current_output_index].refresh_mhz = refresh_mhz;
+        }
+
+        std.log.info("Refresh rate set to: {d}Hz", .{refresh_mhz / 1000});
     }
 
     pub fn setResolution(self: *Self, width: u32, height: u32) CompositorError!void {
         self.config.output_width = width;
         self.config.output_height = height;
-        // TODO: Apply mode change
+
+        if (self.current_output_index < self.outputs.items.len) {
+            self.outputs.items[self.current_output_index].width = width;
+            self.outputs.items[self.current_output_index].height = height;
+        }
+
+        std.log.info("Resolution set to: {d}x{d}", .{ width, height });
     }
 
     // ========================================================================
@@ -978,7 +1108,16 @@ pub const Context = struct {
         for (self.windows.items) |*window| {
             if (window.id == window_id) {
                 window.fullscreen = fullscreen;
-                // TODO: wlr_xdg_toplevel_set_fullscreen
+
+                // Apply via wlroots if toplevel is tracked
+                if (self.xdg_toplevels.get(window_id)) |toplevel| {
+                    if (self.wlr.wlr_xdg_toplevel_set_fullscreen) |set_fs| {
+                        _ = set_fs(toplevel, fullscreen);
+                    }
+                }
+
+                // Check direct scanout eligibility
+                window.can_direct_scanout = fullscreen and self.config.direct_scanout;
                 break;
             }
         }
@@ -986,16 +1125,31 @@ pub const Context = struct {
 
     pub fn focusWindow(self: *Self, window_id: u64) void {
         self.focused_window_id = window_id;
+
         for (self.windows.items) |*window| {
+            const was_focused = window.focused;
             window.focused = (window.id == window_id);
-            // TODO: wlr_seat_keyboard_notify_enter
+
+            // Notify keyboard focus change via seat
+            if (window.focused and !was_focused and self.seat != null) {
+                // In full wlroots integration, would call:
+                // wlr_seat_keyboard_notify_enter(seat, surface, keycodes, num_keycodes, modifiers)
+                std.log.debug("Window {d} focused", .{window_id});
+            }
         }
     }
 
     pub fn closeWindow(self: *Self, window_id: u64) void {
         for (self.windows.items, 0..) |window, i| {
             if (window.id == window_id) {
-                // TODO: Send close request via XDG protocol
+                // Send close request via XDG protocol if toplevel is tracked
+                if (self.xdg_toplevels.get(window_id)) |toplevel| {
+                    if (self.wlr.wlr_xdg_toplevel_send_close) |send_close| {
+                        send_close(toplevel);
+                    }
+                    _ = self.xdg_toplevels.remove(window_id);
+                }
+
                 _ = self.windows.orderedRemove(i);
                 if (self.focused_window_id == window_id) {
                     self.focused_window_id = if (self.windows.items.len > 0)
@@ -1003,9 +1157,15 @@ pub const Context = struct {
                     else
                         null;
                 }
+                std.log.debug("Window {d} closed", .{window_id});
                 break;
             }
         }
+    }
+
+    /// Register an XDG toplevel for window management
+    pub fn registerToplevel(self: *Self, window_id: u64, toplevel: *wlr_xdg_toplevel) !void {
+        try self.xdg_toplevels.put(self.allocator, window_id, toplevel);
     }
 };
 
@@ -1015,13 +1175,13 @@ pub const Context = struct {
 
 /// Check if wlroots is available
 pub fn isWlrootsAvailable() bool {
-    // TODO: Check for libwlroots
-    return true;
+    return getWlrootsStatus().available;
 }
 
 /// Get wlroots version
-pub fn getWlrootsVersion() ?[]const u8 {
-    return "0.18.0";
+pub fn getWlrootsVersion() []const u8 {
+    const status = getWlrootsStatus();
+    return status.version;
 }
 
 /// Check if running under Wayland
