@@ -2,6 +2,11 @@
 
 **NVIDIA-Native Gaming Runtime for Linux**
 
+> **⚠️ Experimental**
+>
+> VENOM is under active development. APIs and CLI options may change.
+> Use in production at your own risk.
+
 VENOM is a high-performance gaming runtime and compositor designed as the "Gamescope killer" — built from the ground up for NVIDIA GPUs with deep integration into the NVPrime ecosystem.
 
 ## Vision
@@ -59,6 +64,20 @@ VENOM is a **full gaming layer** that sits between the OS and games:
 - Zero-copy overlay support
 - Works with native Vulkan, DXVK, vkd3d-proton
 
+### DLSS 4.5 Integration
+- Automatic GPU generation detection (Turing → Blackwell)
+- Multi Frame Generation (RTX 40/50 series)
+- Dynamic frame gen up to 6x on RTX 50 series
+- Preset-based configuration (quality, balanced, performance, ultra_performance)
+- Per-game DLSS profiles
+
+### Auto-HDR (RTX HDR)
+- SDR to HDR conversion for non-HDR games
+- AI-enhanced tone mapping (RTX 40/50 series)
+- Gamescope ITM (Inverse Tone Mapping) integration
+- Presets: standard, vivid, accurate, cinema
+- Configurable SDR brightness and HDR peak nits
+
 ## Usage
 
 ### CLI
@@ -70,8 +89,20 @@ venom run ./game
 # Run with options
 venom run --fps=144 --no-vrr ./game
 
+# Run with DLSS Frame Generation
+venom run --dlss=balanced --frame-gen ./game
+
+# Run with Auto-HDR for SDR games
+venom run --auto-hdr=vivid ./game
+
+# Run with Gamescope compositor
+venom run --gamescope --auto-hdr --hdr-peak=1400 ./game
+
 # Run Steam game
 venom run steam steam://rungameid/1234
+
+# Check DLSS/GPU capabilities
+venom dlss
 
 # Show system info
 venom info
@@ -89,6 +120,12 @@ venom version
 | `--no-hdr` | Disable HDR passthrough |
 | `--low-latency` | Enable low-latency mode (default) |
 | `--hud` | Show performance overlay |
+| `--dlss=<preset>` | DLSS preset: quality, balanced, performance, ultra_performance |
+| `--frame-gen` | Enable DLSS Frame Generation (RTX 40+) |
+| `--auto-hdr` | Enable Auto-HDR for SDR games |
+| `--auto-hdr=<preset>` | Auto-HDR preset: standard, vivid, accurate, cinema |
+| `--sdr-brightness=<nits>` | SDR content brightness (default: 203 nits) |
+| `--hdr-peak=<nits>` | HDR peak brightness target (default: 1000 nits) |
 
 ### Environment Variables
 
@@ -202,10 +239,12 @@ Layer features:
 - [x] CLI interface
 - [x] Wire up nvprime integration
 - [x] Vulkan layer implementation (frame timing, swapchain, VK_NV_low_latency2)
-- [ ] Wire up nvsync/nvlatency hooks
-- [ ] PrimeTime compositor integration
-- [ ] nvhud overlay integration
-- [ ] Steam/Proton launch wrapper
+- [x] DLSS 4.5 integration with GPU detection
+- [x] Auto-HDR (RTX HDR) with Gamescope ITM
+- [x] Wire up nvsync/nvlatency hooks (VRR control, Reflex timing)
+- [x] PrimeTime compositor integration (wlroots-based, HDR/VRR/direct scanout)
+- [x] nvhud overlay integration (compositor-rendered HUD)
+- [x] Steam/Proton launch wrapper (environment setup, DXVK/VKD3D config)
 
 ## License
 

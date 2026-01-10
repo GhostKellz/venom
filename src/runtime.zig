@@ -2,8 +2,17 @@
 //!
 //! Handles frame timing, VRR coordination, and game process management.
 //! Integrates with PrimeTime compositor for direct scanout.
+//!
+//! NVPrime Integration:
+//! - nvsync: VRR/G-Sync state and control
+//! - nvdisplay: Display configuration and HDR
 
 const std = @import("std");
+const nvprime = @import("nvprime");
+
+// nvsync/nvdisplay integration via nvprime
+const nvsync = nvprime.nvruntime.nvsync;
+const nvdisplay = nvprime.nvdisplay;
 
 /// Get current time in nanoseconds
 fn getCurrentTimeNs() u64 {
@@ -36,6 +45,21 @@ pub const FrameStats = struct {
     frame_count: u64 = 0,
     /// Current VRR refresh rate
     vrr_hz: u32 = 0,
+    /// VRR active
+    vrr_active: bool = false,
+    /// G-Sync mode
+    gsync_mode: []const u8 = "unknown",
+};
+
+/// VRR state from nvsync
+pub const VrrInfo = struct {
+    enabled: bool = false,
+    vrr_type: []const u8 = "none",
+    min_hz: u32 = 0,
+    max_hz: u32 = 0,
+    current_hz: u32 = 0,
+    lfc_supported: bool = false,
+    lfc_active: bool = false,
 };
 
 /// Rolling statistics buffer
@@ -184,6 +208,71 @@ pub const Context = struct {
             return result != error.NoSuchProcess;
         }
         return false;
+    }
+
+    /// Query VRR state via nvsync
+    pub fn getVrrInfo(self: *const Context, display_name: ?[]const u8) VrrInfo {
+        _ = self;
+        const name = display_name orelse "DP-1";
+
+        // Query G-Sync state
+        const gsync_state = nvdisplay.gsync.getState(name) catch {
+            return VrrInfo{};
+        };
+
+        // Query VRR state
+        const vrr_state = nvdisplay.vrr.getState(name) catch {
+            return VrrInfo{
+                .enabled = gsync_state.enabled,
+                .vrr_type = gsync_state.mode.description(),
+            };
+        };
+
+        return VrrInfo{
+            .enabled = vrr_state.enabled,
+            .vrr_type = vrr_state.vrr_type.description(),
+            .min_hz = vrr_state.min_hz,
+            .max_hz = vrr_state.max_hz,
+            .current_hz = vrr_state.current_hz,
+            .lfc_supported = vrr_state.lfc_supported,
+            .lfc_active = vrr_state.lfc_active,
+        };
+    }
+
+    /// Enable VRR via nvsync
+    pub fn enableVrr(self: *Context, display_name: ?[]const u8) !void {
+        _ = self;
+        const name = display_name orelse "DP-1";
+        try nvdisplay.vrr.enable(name);
+        std.log.info("VRR enabled on {s}", .{name});
+    }
+
+    /// Disable VRR via nvsync
+    pub fn disableVrr(self: *Context, display_name: ?[]const u8) !void {
+        _ = self;
+        const name = display_name orelse "DP-1";
+        try nvdisplay.vrr.disable(name);
+        std.log.info("VRR disabled on {s}", .{name});
+    }
+
+    /// Set VRR mode via nvsync
+    pub fn setVrrMode(self: *Context, display_name: ?[]const u8, mode: nvdisplay.vrr.VrrMode) !void {
+        _ = self;
+        const name = display_name orelse "DP-1";
+        try nvdisplay.vrr.setMode(name, mode);
+        std.log.info("VRR mode set to {s} on {s}", .{ mode.description(), name });
+    }
+
+    /// Get frame stats with VRR info
+    pub fn getFrameStatsWithVrr(self: *const Context, display_name: ?[]const u8) FrameStats {
+        var stats = self.getFrameStats();
+        const vrr_info = self.getVrrInfo(display_name);
+
+        stats.vrr_active = vrr_info.enabled;
+        stats.vrr_hz = vrr_info.current_hz;
+        stats.gsync_mode = vrr_info.vrr_type;
+
+        return stats;
     }
 };
 

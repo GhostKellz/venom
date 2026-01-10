@@ -31,6 +31,7 @@ pub const hud_renderer = @import("hud_renderer.zig");
 pub const sessions = @import("sessions.zig");
 pub const governor = @import("governor.zig");
 pub const numa = @import("numa.zig");
+pub const proton = @import("proton.zig");
 
 pub const version = "0.1.0";
 

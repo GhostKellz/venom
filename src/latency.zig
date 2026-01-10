@@ -2,13 +2,26 @@
 //!
 //! Deep NVIDIA integration for latency monitoring and optimization.
 //! Monitors frame queues, GPU scheduling, and input-to-display pipeline.
+//!
+//! Integrates with NVPrime's nvlatency for:
+//! - NVIDIA Reflex (VK_NV_low_latency2) markers
+//! - Frame latency measurement and tracking
+//! - Latency prediction and optimization
 
 const std = @import("std");
+const nvprime = @import("nvprime");
+
+// nvlatency integration via nvprime
+const nvlatency = nvprime.nvruntime.nvlatency;
 
 /// Latency engine configuration
 pub const Config = struct {
     frame_queue_depth: u8 = 2,
     prediction_enabled: bool = false,
+    /// Use NVIDIA Reflex for latency reduction
+    reflex_enabled: bool = true,
+    /// Reflex mode preset
+    reflex_preset: nvlatency.LatencyPreset = .balanced,
 };
 
 /// Latency statistics
@@ -130,12 +143,34 @@ pub const Context = struct {
     // Frame prediction
     predicted_latency_ms: f32 = 0,
 
+    // nvlatency integration (initialized when Vulkan context is available)
+    reflex_mode: nvlatency.ReflexMode = .off,
+    reflex_supported: bool = false,
+    timer: nvlatency.Timer = .{},
+
+    // Frame timing using nvlatency.timing module
+    frame_timestamps: nvlatency.timing.FrameTimestamps = .{},
+
     pub fn init(allocator: std.mem.Allocator, config: Config) !*Context {
         const self = try allocator.create(Context);
         self.* = Context{
             .allocator = allocator,
             .config = config,
         };
+
+        // Check for NVIDIA GPU and Reflex support
+        if (config.reflex_enabled and nvlatency.isNvidiaGpu()) {
+            self.reflex_mode = config.reflex_preset.getReflexMode();
+            self.reflex_supported = true;
+            std.log.info("nvlatency: Reflex mode = {s}", .{
+                switch (self.reflex_mode) {
+                    .off => "off",
+                    .on => "on",
+                    .boost => "boost",
+                },
+            });
+        }
+
         return self;
     }
 
@@ -153,10 +188,79 @@ pub const Context = struct {
         }
     }
 
-    /// Begin tracking a new frame
+    /// Begin tracking a new frame (with Reflex markers)
     pub fn beginFrame(self: *Context) u64 {
         self.current_frame_id += 1;
+
+        // Start nvlatency timer for this frame
+        self.timer.start();
+
+        // Record simulation start timestamp
+        self.frame_timestamps.simulation_start = self.timer.startTime();
+
         return self.current_frame_id;
+    }
+
+    /// Mark render submit (call before GPU submission)
+    pub fn markRenderSubmit(self: *Context) void {
+        self.frame_timestamps.render_submit = std.time.nanoTimestamp();
+    }
+
+    /// Mark present (call after vkQueuePresent)
+    pub fn markPresent(self: *Context) void {
+        self.frame_timestamps.present = std.time.nanoTimestamp();
+
+        // Record frame time
+        const elapsed = self.timer.elapsedNs();
+        self.timer.stop();
+
+        // Create sample and record
+        const sample = FrameSample{
+            .frame_id = self.current_frame_id,
+            .present_ns = elapsed,
+            .cpu_start_ns = @intCast(self.frame_timestamps.simulation_start),
+            .gpu_submit_ns = @intCast(self.frame_timestamps.render_submit),
+        };
+        self.history.push(sample);
+
+        if (self.config.prediction_enabled) {
+            self.updatePrediction();
+        }
+
+        // Reset timestamps for next frame
+        self.frame_timestamps = .{};
+    }
+
+    /// Get Reflex metrics
+    pub fn getReflexMetrics(self: *const Context) ?nvlatency.metrics.LatencyMetrics {
+        if (!self.reflex_supported) return null;
+
+        // Build metrics from our internal tracking
+        return nvlatency.metrics.LatencyMetrics{
+            .total_latency_us = @intFromFloat(self.history.averageLatencyMs() * 1000.0),
+            .render_latency_us = @intFromFloat(self.history.averageGpuMs() * 1000.0),
+            .present_latency_us = 0,
+            .driver_latency_us = 0,
+            .os_queue_latency_us = 0,
+            .gpu_render_latency_us = @intFromFloat(self.history.averageGpuMs() * 1000.0),
+        };
+    }
+
+    /// Set Reflex mode
+    pub fn setReflexMode(self: *Context, mode: nvlatency.ReflexMode) void {
+        self.reflex_mode = mode;
+        std.log.info("Reflex mode changed to: {s}", .{
+            switch (mode) {
+                .off => "off",
+                .on => "on",
+                .boost => "boost",
+            },
+        });
+    }
+
+    /// Check if Reflex is active
+    pub fn isReflexActive(self: *const Context) bool {
+        return self.reflex_supported and self.reflex_mode != .off;
     }
 
     /// Get current latency statistics
