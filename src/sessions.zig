@@ -56,6 +56,15 @@ pub const GamescopeOptions = struct {
     expose_wayland: bool = false,
     /// Additional user-provided flags
     extra_flags: []const []const u8 = &.{},
+    // Auto-HDR (RTX HDR for SDR games)
+    /// Enable Auto-HDR (SDR to HDR conversion)
+    auto_hdr: bool = false,
+    /// SDR content brightness in nits (default 203)
+    sdr_content_nits: ?u32 = null,
+    /// Peak HDR brightness target in nits (default 1000)
+    hdr_peak_nits: ?u32 = null,
+    /// Enable wide gamut (BT.2020) for SDR content
+    hdr_wide_gamut: bool = true,
 };
 
 pub const GamescopeCommand = struct {
@@ -197,6 +206,32 @@ pub fn buildGamescopeCommand(allocator: std.mem.Allocator, options: GamescopeOpt
     }
     if (options.vrr) {
         try args.append(allocator, "--adaptive-sync");
+    }
+
+    // Auto-HDR (SDR to HDR conversion via Gamescope ITM)
+    if (options.auto_hdr) {
+        // Enable HDR if not already enabled
+        if (!options.hdr) {
+            try args.append(allocator, "--hdr-enabled");
+        }
+        // SDR content brightness
+        const sdr_nits = options.sdr_content_nits orelse 203;
+        const sdr_val = try std.fmt.allocPrint(allocator, "{d}", .{sdr_nits});
+        try owned_buffers.append(allocator, sdr_val);
+        try args.append(allocator, "--hdr-sdr-content-nits");
+        try args.append(allocator, sdr_val);
+        // Enable Inverse Tone Mapping for SDR-to-HDR
+        try args.append(allocator, "--hdr-itm-enable");
+        // Peak brightness target
+        const peak_nits = options.hdr_peak_nits orelse 1000;
+        const peak_val = try std.fmt.allocPrint(allocator, "{d}", .{peak_nits});
+        try owned_buffers.append(allocator, peak_val);
+        try args.append(allocator, "--hdr-itm-target-nits");
+        try args.append(allocator, peak_val);
+        // Wide gamut for SDR content
+        if (options.hdr_wide_gamut) {
+            try args.append(allocator, "--hdr-wide-gammut-for-sdr");
+        }
     }
 
     // Upscaling

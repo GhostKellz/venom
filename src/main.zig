@@ -101,10 +101,17 @@ fn printUsage() void {
         \\                            multi_4x, dynamic, dynamic_6x) [RTX 40/50]
         \\  --dlss-rr                 Enable DLSS Ray Reconstruction [RTX 40+]
         \\
+        \\Auto-HDR Options (RTX 20+, requires Gamescope):
+        \\  --auto-hdr                Enable Auto-HDR for SDR games
+        \\  --auto-hdr=<preset>       Auto-HDR preset (standard, vivid, accurate, cinema)
+        \\  --sdr-brightness=<nits>   SDR content brightness (default: 203 nits)
+        \\  --hdr-peak=<nits>         Peak HDR brightness target (default: 1000 nits)
+        \\
         \\Examples:
         \\  venom run ./game
         \\  venom run --dlss=quality --frame-gen=enabled ./game
         \\  venom run --dlss=dynamic --fps=165 ./game  # RTX 50 Dynamic MFG
+        \\  venom run --gamescope --auto-hdr=vivid ./game  # Auto-HDR
         \\  venom run --gamescope --fps=144 steam steam://rungameid/1234
         \\
         \\
@@ -391,6 +398,11 @@ const RunOptions = struct {
     dlss_quality: ?[]const u8 = null, // Explicit quality mode
     frame_gen: ?[]const u8 = null, // Frame gen mode (enabled, multi_2x, dynamic, etc)
     ray_reconstruction: bool = false, // Enable DLSS Ray Reconstruction
+    // Auto-HDR options (RTX HDR for SDR games)
+    auto_hdr: bool = false, // Enable Auto-HDR
+    auto_hdr_preset: ?[]const u8 = null, // Auto-HDR preset (standard, vivid, accurate, cinema)
+    sdr_brightness: ?u32 = null, // SDR content brightness in nits (default 203)
+    hdr_peak_nits: ?u32 = null, // Peak brightness target in nits
 };
 
 const GovernorMode = union(enum) {
@@ -490,6 +502,24 @@ fn parseRunOptions(allocator: std.mem.Allocator, args: []const []const u8) !stru
         }
         if (std.mem.eql(u8, arg, "--ray-reconstruction") or std.mem.eql(u8, arg, "--dlss-rr")) {
             opts.ray_reconstruction = true;
+            continue;
+        }
+        // Auto-HDR options
+        if (std.mem.eql(u8, arg, "--auto-hdr")) {
+            opts.auto_hdr = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--auto-hdr=")) {
+            opts.auto_hdr = true;
+            opts.auto_hdr_preset = arg[11..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sdr-brightness=")) {
+            opts.sdr_brightness = try std.fmt.parseInt(u32, arg[17..], 10);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--hdr-peak=")) {
+            opts.hdr_peak_nits = try std.fmt.parseInt(u32, arg[11..], 10);
             continue;
         }
 
@@ -626,6 +656,10 @@ fn runGame(allocator: std.mem.Allocator, run_args: []const []const u8) !void {
             .hdr = runtime_config.hdr_enabled,
             .vrr = user_opts.gamescope_vrr,
             .extra_flags = user_opts.gamescope_extra_flags,
+            // Auto-HDR options
+            .auto_hdr = user_opts.auto_hdr,
+            .sdr_content_nits = user_opts.sdr_brightness,
+            .hdr_peak_nits = user_opts.hdr_peak_nits,
         }, game_args) catch |err| {
             std.debug.print("VENOM: Failed to build Gamescope command: {s}\n", .{@errorName(err)});
             break :blk game_args;
