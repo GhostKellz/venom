@@ -11,6 +11,12 @@ const hud = @import("hud.zig");
 const RenderCommand = nvprime.nvhud.RenderCommand;
 const Color = nvprime.nvhud.Color;
 
+/// Get current time in nanoseconds (monotonic)
+fn getNanoTimestamp() i128 {
+    const ts = std.posix.clock_gettime(.MONOTONIC) catch return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 /// Render target type
 pub const TargetType = enum {
     /// Software rendering to memory buffer
@@ -124,7 +130,7 @@ pub const Renderer = struct {
 
     /// Render HUD commands
     pub fn render(self: *Self, hud_ctx: *hud.Hud, width: u32, height: u32) !void {
-        const start_time = std.time.nanoTimestamp();
+        const start_time = getNanoTimestamp();
 
         // Reset stats
         self.rects_rendered = 0;
@@ -148,7 +154,7 @@ pub const Renderer = struct {
         // Render venom-specific extra lines
         self.renderExtraLines(hud_ctx);
 
-        const end_time = std.time.nanoTimestamp();
+        const end_time = getNanoTimestamp();
         self.last_render_time_ns = @intCast(end_time - start_time);
         self.render_count += 1;
     }

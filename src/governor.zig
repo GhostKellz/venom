@@ -103,40 +103,58 @@ const governor_root = "/sys/devices/system/cpu";
 const governor_file = "scaling_governor";
 
 fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    // Use POSIX openat with AT.FDCWD for absolute paths
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+
+    const fd = std.posix.openatZ(std.posix.AT.FDCWD, path_z, .{}, 0) catch return error.ReadError;
+    defer std.posix.close(fd);
+
     var buf: [128]u8 = undefined;
-    const len = file.read(&buf) catch return error.ReadError;
+    const len = std.posix.read(fd, &buf) catch return error.ReadError;
     const result = try allocator.alloc(u8, len);
     @memcpy(result, buf[0..len]);
     return result;
 }
 
 fn writeFile(path: []const u8, value: []const u8) !void {
-    var file = try std.fs.openFileAbsolute(path, .{ .mode = .write_only });
-    defer file.close();
-    try file.seekTo(0);
-    _ = try file.writeAll(value);
+    // Use POSIX openat with AT.FDCWD for absolute paths
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+
+    const fd = std.posix.openatZ(std.posix.AT.FDCWD, path_z, .{ .ACCMODE = .WRONLY }, 0) catch return error.WriteError;
+    defer std.posix.close(fd);
+
+    const result = std.c.write(fd, value.ptr, value.len);
+    if (result < 0) return error.WriteError;
 }
 
 pub fn isAvailable() bool {
-    std.fs.accessAbsolute(governor_root, .{}) catch return false;
-    return true;
+    // Use C access() for absolute paths
+    const result = std.c.access(governor_root, 0); // F_OK = 0
+    return result == 0;
 }
 
 fn enumerateGovernorFiles(allocator: std.mem.Allocator) ![]GovernorEntry {
     var list: std.ArrayListUnmanaged(GovernorEntry) = .empty;
     errdefer list.deinit(allocator);
 
-    var dir = try std.fs.openDirAbsolute(governor_root, .{ .iterate = true });
-    defer dir.close();
+    // Use C library for directory iteration
+    const dir = std.c.opendir(governor_root) orelse return error.OpenError;
+    defer _ = std.c.closedir(dir);
 
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (!std.mem.startsWith(u8, entry.name, "cpu")) continue;
-        if (std.mem.indexOfScalar(u8, entry.name, '-')) |_| continue;
+    while (std.c.readdir(dir)) |entry| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
 
-        const path_buffer = try std.fmt.allocPrint(allocator, "{s}/{s}/cpufreq/{s}", .{ governor_root, entry.name, governor_file });
+        if (!std.mem.startsWith(u8, name, "cpu")) continue;
+        if (std.mem.indexOfScalar(u8, name, '-')) |_| continue;
+
+        const path_buffer = try std.fmt.allocPrint(allocator, "{s}/{s}/cpufreq/{s}", .{ governor_root, name, governor_file });
         try list.append(allocator, .{ .path = path_buffer });
     }
 
@@ -251,18 +269,24 @@ pub fn getBoost() ?bool {
 
 /// Set boost state
 pub fn setBoost(enabled: bool) !void {
-    // AMD
-    if (std.fs.openFileAbsolute("/sys/devices/system/cpu/cpufreq/boost", .{ .mode = .write_only })) |file| {
-        defer file.close();
-        _ = try file.write(if (enabled) "1" else "0");
-        return;
+    // AMD boost path
+    const amd_path = "/sys/devices/system/cpu/cpufreq/boost";
+    const intel_path = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+
+    // Try AMD path first
+    if (std.posix.openatZ(std.posix.AT.FDCWD, amd_path, .{ .ACCMODE = .WRONLY }, 0)) |fd| {
+        defer std.posix.close(fd);
+        const value: []const u8 = if (enabled) "1" else "0";
+        const result = std.c.write(fd, value.ptr, value.len);
+        if (result >= 0) return;
     } else |_| {}
 
-    // Intel
-    if (std.fs.openFileAbsolute("/sys/devices/system/cpu/intel_pstate/no_turbo", .{ .mode = .write_only })) |file| {
-        defer file.close();
-        _ = try file.write(if (enabled) "0" else "1"); // Inverted
-        return;
+    // Try Intel path
+    if (std.posix.openatZ(std.posix.AT.FDCWD, intel_path, .{ .ACCMODE = .WRONLY }, 0)) |fd| {
+        defer std.posix.close(fd);
+        const value: []const u8 = if (enabled) "0" else "1"; // Inverted
+        const result = std.c.write(fd, value.ptr, value.len);
+        if (result >= 0) return;
     } else |_| {}
 
     return error.NotAvailable;

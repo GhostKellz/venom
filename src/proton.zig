@@ -148,7 +148,7 @@ pub const Launcher = struct {
             "/var/lib/flatpak/app/com.valvesoftware.Steam",
         };
 
-        const home = std.posix.getenv("HOME") orelse "/home";
+        const home = if (std.c.getenv("HOME")) |h| std.mem.sliceTo(h, 0) else "/home";
 
         for (steam_paths) |path| {
             var full_path_buf: [512]u8 = undefined;
@@ -157,7 +157,11 @@ pub const Launcher = struct {
             else
                 path;
 
-            if (std.fs.cwd().access(full_path, .{})) |_| {
+            // Use C access for path checking
+            var access_path_buf: [512]u8 = undefined;
+            @memcpy(access_path_buf[0..full_path.len], full_path);
+            access_path_buf[full_path.len] = 0;
+            if (std.c.access(@ptrCast(&access_path_buf), 0) == 0) {
                 const len = @min(full_path.len, self.steam_root.len);
                 @memcpy(self.steam_root[0..len], full_path[0..len]);
                 self.steam_root_len = len;
@@ -178,7 +182,7 @@ pub const Launcher = struct {
                     self.runtime.description(),
                 });
                 break;
-            } else |_| {}
+            }
         }
     }
 
@@ -335,16 +339,39 @@ pub const Launcher = struct {
     }
 };
 
-/// Check if Steam is running
+/// Check if Steam is running (checks /proc for steam process)
 pub fn isSteamRunning() bool {
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = &.{ "pgrep", "-x", "steam" },
-    }) catch return false;
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
+    // Check if steam process exists by looking at /proc
+    const dir = std.c.opendir("/proc") orelse return false;
+    defer _ = std.c.closedir(dir);
 
-    return result.term.Exited == 0;
+    while (std.c.readdir(dir)) |entry| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+
+        // Check if it's a PID directory (numeric)
+        const is_pid = for (name) |c| {
+            if (c < '0' or c > '9') break false;
+        } else true;
+
+        if (is_pid and name.len > 0) {
+            var comm_path_buf: [64]u8 = undefined;
+            const comm_path = std.fmt.bufPrint(&comm_path_buf, "/proc/{s}/comm", .{name}) catch continue;
+            var path_z: [64]u8 = undefined;
+            @memcpy(path_z[0..comm_path.len], comm_path);
+            path_z[comm_path.len] = 0;
+
+            if (std.posix.openatZ(std.posix.AT.FDCWD, @ptrCast(&path_z), .{}, 0)) |fd| {
+                defer std.posix.close(fd);
+                var buf: [32]u8 = undefined;
+                if (std.posix.read(fd, &buf)) |len| {
+                    const comm = std.mem.trim(u8, buf[0..len], " \n\t\r");
+                    if (std.mem.eql(u8, comm, "steam")) return true;
+                } else |_| {}
+            } else |_| {}
+        }
+    }
+    return false;
 }
 
 /// Get Steam user ID

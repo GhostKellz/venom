@@ -14,6 +14,12 @@ const nvprime = @import("nvprime");
 // nvlatency integration via nvprime
 const nvlatency = nvprime.nvruntime.nvlatency;
 
+/// Get current time in nanoseconds (monotonic)
+fn getNanoTimestamp() i128 {
+    const ts = std.posix.clock_gettime(.MONOTONIC) catch return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 /// Latency engine configuration
 pub const Config = struct {
     frame_queue_depth: u8 = 2,
@@ -203,12 +209,12 @@ pub const Context = struct {
 
     /// Mark render submit (call before GPU submission)
     pub fn markRenderSubmit(self: *Context) void {
-        self.frame_timestamps.render_submit = std.time.nanoTimestamp();
+        self.frame_timestamps.render_submit = getNanoTimestamp();
     }
 
     /// Mark present (call after vkQueuePresent)
     pub fn markPresent(self: *Context) void {
-        self.frame_timestamps.present = std.time.nanoTimestamp();
+        self.frame_timestamps.present = getNanoTimestamp();
 
         // Record frame time
         const elapsed = self.timer.elapsedNs();

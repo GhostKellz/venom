@@ -61,8 +61,8 @@ pub fn build(b: *std.Build) void {
 
     // Link NVML for CLI
     if (use_nvml) {
-        exe.linkSystemLibrary("nvidia-ml");
-        exe.linkLibC();
+        exe.root_module.linkSystemLibrary("nvidia-ml", .{});
+        exe.root_module.linkSystemLibrary("c", .{});
         exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/cuda/targets/x86_64-linux/include" });
     }
 

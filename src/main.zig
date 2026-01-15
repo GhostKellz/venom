@@ -12,13 +12,21 @@ const nvprime = @import("nvprime");
 const sessions = venom.sessions;
 const governor = venom.governor;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // Collect arguments into a slice
+    var args_list: std.ArrayList([]const u8) = .empty;
+    defer args_list.deinit(allocator);
+
+    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
+    defer args_iter.deinit();
+
+    while (args_iter.next()) |arg| {
+        try args_list.append(allocator, arg);
+    }
+
+    const args = args_list.items;
 
     if (args.len < 2) {
         printUsage();
@@ -48,6 +56,12 @@ pub fn main() !void {
             return;
         }
         try runGame(allocator, args[2..]);
+    } else if (std.mem.eql(u8, cmd, "cache")) {
+        try printCacheInfo(allocator);
+    } else if (std.mem.eql(u8, cmd, "profiles")) {
+        printProfilesInfo();
+    } else if (std.mem.eql(u8, cmd, "steam")) {
+        try printSteamInfo(allocator);
     } else {
         std.debug.print("Unknown command: {s}\n", .{cmd});
         printUsage();
@@ -768,6 +782,154 @@ fn runGame(allocator: std.mem.Allocator, run_args: []const []const u8) !void {
     } else {
         std.debug.print("\n", .{});
     }
+}
+
+fn printCacheInfo(allocator: std.mem.Allocator) !void {
+    // Use nvshader from nvprime (no duplication)
+    const nvshader = nvprime.nvruntime.nvshader;
+
+    std.debug.print("VENOM Shader Cache Info (via nvshader)\n", .{});
+    std.debug.print("======================================\n\n", .{});
+
+    // Detect cache paths
+    var cache_paths = nvshader.paths.CachePaths.detect(allocator) catch {
+        std.debug.print("Error: Failed to detect cache paths\n", .{});
+        return;
+    };
+    defer cache_paths.deinit();
+
+    // Print detected paths with sizes
+    const items = [_]struct {
+        name: []const u8,
+        path: ?[]const u8,
+    }{
+        .{ .name = "DXVK State Cache", .path = cache_paths.dxvk },
+        .{ .name = "vkd3d-proton Cache", .path = cache_paths.vkd3d },
+        .{ .name = "NVIDIA Compute Cache", .path = cache_paths.nvidia },
+        .{ .name = "Mesa Shader Cache", .path = cache_paths.mesa },
+        .{ .name = "Fossilize Cache", .path = cache_paths.fossilize },
+        .{ .name = "Steam Shader Cache", .path = cache_paths.steam_shadercache },
+    };
+
+    var total_size: u64 = 0;
+
+    for (items) |item| {
+        std.debug.print("  {s}:\n", .{item.name});
+        if (item.path) |path| {
+            const size = nvshader.paths.getDirSize(allocator, path) catch 0;
+            const count = nvshader.paths.countFiles(allocator, path) catch 0;
+            total_size += size;
+
+            std.debug.print("    Path:  {s}\n", .{path});
+            std.debug.print("    Size:  {d:.2} MB ({d} files)\n", .{
+                @as(f64, @floatFromInt(size)) / (1024.0 * 1024.0),
+                count,
+            });
+        } else {
+            std.debug.print("    (not found)\n", .{});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    std.debug.print("Total: {d:.2} MB\n\n", .{
+        @as(f64, @floatFromInt(total_size)) / (1024.0 * 1024.0),
+    });
+
+    std.debug.print("Commands:\n", .{});
+    std.debug.print("  nvshader status    - Full cache status\n", .{});
+    std.debug.print("  nvshader clear     - Clear all caches\n", .{});
+}
+
+fn printProfilesInfo() void {
+    const profiles = venom.profiles;
+
+    std.debug.print("VENOM Game Profiles\n", .{});
+    std.debug.print("===================\n\n", .{});
+
+    std.debug.print("Built-in Presets:\n\n", .{});
+
+    // Low Latency
+    const low_lat = profiles.Profile.lowLatency();
+    std.debug.print("  Low Latency (Competitive Gaming):\n", .{});
+    std.debug.print("    Reflex:      boost\n", .{});
+    std.debug.print("    Frame Queue: {d}\n", .{low_lat.max_frame_queue});
+    std.debug.print("    VRR:         {s}\n", .{if (low_lat.vrr_enabled) "Yes" else "No"});
+    std.debug.print("    Tearing:     {s}\n\n", .{if (low_lat.tearing_allowed) "Allowed" else "No"});
+
+    // Quality
+    const quality_profile = profiles.Profile.quality();
+    std.debug.print("  Quality (Single Player):\n", .{});
+    std.debug.print("    DLSS:        {s} ({s})\n", .{ if (quality_profile.dlss_enabled) "Enabled" else "Disabled", @tagName(quality_profile.dlss_preset) });
+    std.debug.print("    Low Latency: {s}\n", .{if (quality_profile.low_latency) "Yes" else "No"});
+    std.debug.print("    HDR:         {s}\n\n", .{if (quality_profile.hdr_enabled) "Yes" else "No"});
+
+    // Balanced
+    const balanced_profile = profiles.Profile.balanced();
+    std.debug.print("  Balanced:\n", .{});
+    std.debug.print("    DLSS:        {s} ({s})\n", .{ if (balanced_profile.dlss_enabled) "Enabled" else "Disabled", @tagName(balanced_profile.dlss_preset) });
+    std.debug.print("    Frame Gen:   {s}\n", .{if (balanced_profile.frame_gen_enabled) "Enabled" else "Disabled"});
+    std.debug.print("    Low Latency: {s}\n\n", .{if (balanced_profile.low_latency) "Yes" else "No"});
+
+    // Max FPS
+    const max_fps = profiles.Profile.maxFps();
+    std.debug.print("  Max FPS:\n", .{});
+    std.debug.print("    DLSS:        {s} ({s})\n", .{ if (max_fps.dlss_enabled) "Enabled" else "Disabled", @tagName(max_fps.dlss_preset) });
+    std.debug.print("    Frame Gen:   {s}\n", .{@tagName(max_fps.frame_gen_mode)});
+    std.debug.print("    Reflex:      {s}\n\n", .{@tagName(max_fps.reflex_mode)});
+
+    std.debug.print("Auto-Detection:\n", .{});
+    std.debug.print("  Competitive games (csgo, cs2, valorant, apex, etc.) -> Low Latency\n", .{});
+    std.debug.print("  AAA games (cyberpunk, rdr2, witcher, etc.) -> Quality\n\n", .{});
+
+    std.debug.print("Usage: venom run --profile=<preset> <game>\n", .{});
+}
+
+fn printSteamInfo(allocator: std.mem.Allocator) !void {
+    const proton_mod = venom.proton;
+
+    std.debug.print("VENOM Steam/Proton Info\n", .{});
+    std.debug.print("=======================\n\n", .{});
+
+    std.debug.print("Steam Status: {s}\n\n", .{if (proton_mod.isSteamRunning()) "Running" else "Not Running"});
+
+    // Initialize launcher to detect Steam
+    const launcher = try proton_mod.Launcher.init(allocator, .{});
+    defer launcher.deinit();
+
+    if (launcher.steam_root_len > 0) {
+        std.debug.print("Steam Installation:\n", .{});
+        std.debug.print("  Path:        {s}\n", .{launcher.steam_root[0..launcher.steam_root_len]});
+        std.debug.print("  Runtime:     {s}\n", .{launcher.runtime.description()});
+        if (launcher.compatdata_path_len > 0) {
+            std.debug.print("  Compatdata:  {s}\n", .{launcher.compatdata_path[0..launcher.compatdata_path_len]});
+        }
+        std.debug.print("\n", .{});
+    } else {
+        std.debug.print("Steam: Not detected\n\n", .{});
+    }
+
+    // Show Proton config
+    std.debug.print("Proton Configuration:\n", .{});
+    std.debug.print("  DXVK Async:  {s}\n", .{if (launcher.config.dxvk_async) "Enabled" else "Disabled"});
+    std.debug.print("  VKD3D:       {s}\n", .{if (launcher.config.vkd3d_enabled) "Enabled" else "Disabled"});
+    std.debug.print("  FSR:         {s}\n", .{if (launcher.config.fsr_enabled) "Enabled" else "Disabled"});
+    std.debug.print("  Gamemode:    {s}\n", .{if (launcher.config.gamemode) "Enabled" else "Disabled"});
+    std.debug.print("  Reflex:      {s}\n", .{if (launcher.config.reflex_enabled) "Enabled" else "Disabled"});
+    std.debug.print("\n", .{});
+
+    // Environment variables preview
+    std.debug.print("Environment Variables (preview):\n", .{});
+    std.debug.print("  __GL_GSYNC_ALLOWED=1\n", .{});
+    std.debug.print("  __GL_VRR_ALLOWED=1\n", .{});
+    std.debug.print("  __GL_MaxFramesAllowed=1\n", .{});
+    std.debug.print("  DXVK_ASYNC=1\n", .{});
+    std.debug.print("  DXVK_NVAPI_ALLOW_OTHER_DRIVERS=1\n", .{});
+    std.debug.print("  VENOM_ENABLED=1\n", .{});
+    std.debug.print("\n", .{});
+
+    std.debug.print("Usage:\n", .{});
+    std.debug.print("  venom steam run <appid>      Launch Steam game by App ID\n", .{});
+    std.debug.print("  venom run steam://rungameid/<appid>  Launch via protocol\n", .{});
 }
 
 test "main compiles" {

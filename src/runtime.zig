@@ -14,6 +14,9 @@ const nvprime = @import("nvprime");
 const nvsync = nvprime.nvruntime.nvsync;
 const nvdisplay = nvprime.nvdisplay;
 
+// C library extern for setenv (not in Zig's std.c)
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 /// Get current time in nanoseconds
 fn getCurrentTimeNs() u64 {
     const now = std.time.Instant.now() catch return 0;
@@ -146,28 +149,40 @@ pub const Context = struct {
     }
 
     pub fn launchGame(self: *Context, argv: []const []const u8) !void {
-        var child_env = try std.process.getEnvMap(self.allocator);
-        defer child_env.deinit();
+        if (argv.len == 0) return error.InvalidArgument;
 
-        // Set NVIDIA gaming environment variables
-        try child_env.put("__GL_GSYNC_ALLOWED", if (self.config.vrr_enabled) "1" else "0");
-        try child_env.put("__GL_VRR_ALLOWED", if (self.config.vrr_enabled) "1" else "0");
-        try child_env.put("__GL_HDR_MODE", if (self.config.hdr_enabled) "scRGB" else "Disabled");
+        // Set NVIDIA gaming environment variables before fork
+        _ = setenv("__GL_GSYNC_ALLOWED", if (self.config.vrr_enabled) "1" else "0", 1);
+        _ = setenv("__GL_VRR_ALLOWED", if (self.config.vrr_enabled) "1" else "0", 1);
+        _ = setenv("__GL_HDR_MODE", if (self.config.hdr_enabled) "scRGB" else "Disabled", 1);
 
         if (self.config.low_latency) {
-            try child_env.put("__GL_MaxFramesAllowed", "1");
-            try child_env.put("DXVK_FRAME_RATE", "0"); // Let VENOM handle limiting
+            _ = setenv("__GL_MaxFramesAllowed", "1", 1);
+            _ = setenv("DXVK_FRAME_RATE", "0", 1); // Let VENOM handle limiting
         }
         if (!self.config.hud_enabled) {
-            try child_env.put("VENOMHUD_DISABLED", "1");
+            _ = setenv("VENOMHUD_DISABLED", "1", 1);
         }
 
-        // Spawn game
-        var child = std.process.Child.init(argv, self.allocator);
-        child.env_map = &child_env;
+        // Convert argv to C format for execve
+        var argv_buf: [257:null]?[*:0]const u8 = @splat(null);
+        for (argv, 0..) |arg, i| {
+            if (i >= 256) break;
+            const arg_z = self.allocator.dupeZ(u8, arg) catch return error.OutOfMemory;
+            argv_buf[i] = arg_z;
+        }
 
-        try child.spawn();
-        self.game_pid = child.id;
+        const pid = std.c.fork();
+        if (pid < 0) return error.ForkFailed;
+
+        if (pid == 0) {
+            // Child process - exec the game
+            _ = std.c.execve(argv_buf[0].?, &argv_buf, std.c.environ);
+            std.c._exit(127); // exec failed
+        }
+
+        // Parent process
+        self.game_pid = pid;
     }
 
     pub fn recordFrame(self: *Context, frame_time_ns: u64) void {

@@ -52,7 +52,7 @@ pub const WlrootsStatus = struct {
 var cached_wlroots_status: ?WlrootsStatus = null;
 
 fn envOrEmpty(name: [*:0]const u8) []const u8 {
-    if (std.posix.getenv(std.mem.span(name))) |value| {
+    if (std.c.getenv(name)) |value| {
         return std.mem.sliceTo(value, 0);
     }
     return "";
@@ -116,29 +116,323 @@ pub fn getWlrootsStatus() WlrootsStatus {
 
 pub const wl_display = opaque {};
 pub const wl_event_loop = opaque {};
-pub const wl_listener = opaque {};
-pub const wl_signal = opaque {};
 pub const wl_client = opaque {};
 pub const wl_resource = opaque {};
 
-pub const wlr_backend = opaque {};
+/// wl_list for doubly-linked list operations
+pub const wl_list = extern struct {
+    prev: ?*wl_list,
+    next: ?*wl_list,
+};
+
+/// wl_signal for event notification
+pub const wl_signal = extern struct {
+    listener_list: wl_list,
+};
+
+/// wl_listener for receiving events
+pub const wl_listener = extern struct {
+    link: wl_list,
+    notify: *const fn (*wl_listener, ?*anyopaque) callconv(.c) void,
+};
+
 pub const wlr_renderer = opaque {};
 pub const wlr_allocator = opaque {};
 pub const wlr_compositor = opaque {};
-pub const wlr_output = opaque {};
 pub const wlr_output_layout = opaque {};
 pub const wlr_scene = opaque {};
 pub const wlr_scene_output = opaque {};
-pub const wlr_seat = opaque {};
-pub const wlr_keyboard = opaque {};
-pub const wlr_pointer = opaque {};
-pub const wlr_xdg_shell = opaque {};
-pub const wlr_xdg_surface = opaque {};
-pub const wlr_xdg_toplevel = opaque {};
 pub const wlr_layer_shell_v1 = opaque {};
 pub const wlr_surface = opaque {};
 pub const wlr_cursor = opaque {};
 pub const wlr_xcursor_manager = opaque {};
+
+/// wlr_backend with event signals (wlroots 0.18)
+pub const wlr_backend = extern struct {
+    impl: ?*anyopaque,
+    events: extern struct {
+        destroy: wl_signal,
+        new_input: wl_signal,
+        new_output: wl_signal,
+    },
+    // Note: more fields follow but we only need events
+};
+
+/// wlr_output with event signals
+pub const wlr_output = extern struct {
+    impl: ?*anyopaque,
+    backend: ?*wlr_backend,
+    display: ?*wl_display,
+    global: ?*anyopaque,
+    resources: wl_list,
+    name: [24]u8,
+    description: ?[*:0]u8,
+    make: [56]u8,
+    model: [16]u8,
+    serial: [16]u8,
+    phys_width: i32,
+    phys_height: i32,
+    modes: wl_list,
+    current_mode: ?*anyopaque,
+    width: i32,
+    height: i32,
+    refresh: i32, // mHz
+    enabled: bool,
+    scale: f32,
+    subpixel: u32,
+    transform: u32,
+    adaptive_sync_status: u32,
+    render_format: u32,
+    needs_frame: bool,
+    frame_pending: bool,
+    transform_matrix: [9]f32,
+    non_desktop: bool,
+    events: extern struct {
+        frame: wl_signal,
+        damage: wl_signal,
+        needs_frame: wl_signal,
+        precommit: wl_signal,
+        commit: wl_signal,
+        present: wl_signal,
+        bind: wl_signal,
+        description: wl_signal,
+        request_state: wl_signal,
+        destroy: wl_signal,
+    },
+};
+
+/// wlr_keyboard with event signals
+pub const wlr_keyboard = extern struct {
+    impl: ?*anyopaque,
+    base: extern struct {
+        type: u32,
+        vendor: u32,
+        product: u32,
+        name: [64]u8,
+        events: extern struct {
+            destroy: wl_signal,
+        },
+        data: ?*anyopaque,
+        link: wl_list,
+    },
+    keymap: ?*anyopaque,
+    xkb_state: ?*anyopaque,
+    led_indexes: [3]u32,
+    mod_indexes: [8]u32,
+    leds: u32,
+    keycodes: [32]u32,
+    num_keycodes: usize,
+    modifiers: extern struct {
+        depressed: u32,
+        latched: u32,
+        locked: u32,
+        group: u32,
+    },
+    repeat_info: extern struct {
+        rate: i32,
+        delay: i32,
+    },
+    events: extern struct {
+        key: wl_signal,
+        modifiers: wl_signal,
+        keymap: wl_signal,
+        repeat_info: wl_signal,
+    },
+};
+
+/// wlr_pointer with event signals
+pub const wlr_pointer = extern struct {
+    impl: ?*anyopaque,
+    base: extern struct {
+        type: u32,
+        vendor: u32,
+        product: u32,
+        name: [64]u8,
+        events: extern struct {
+            destroy: wl_signal,
+        },
+        data: ?*anyopaque,
+        link: wl_list,
+    },
+    output_name: ?[*:0]u8,
+    events: extern struct {
+        motion: wl_signal,
+        motion_absolute: wl_signal,
+        button: wl_signal,
+        axis: wl_signal,
+        frame: wl_signal,
+        swipe_begin: wl_signal,
+        swipe_update: wl_signal,
+        swipe_end: wl_signal,
+        pinch_begin: wl_signal,
+        pinch_update: wl_signal,
+        pinch_end: wl_signal,
+        hold_begin: wl_signal,
+        hold_end: wl_signal,
+    },
+};
+
+/// wlr_input_device types
+pub const WLR_INPUT_DEVICE_KEYBOARD: u32 = 0;
+pub const WLR_INPUT_DEVICE_POINTER: u32 = 1;
+pub const WLR_INPUT_DEVICE_TOUCH: u32 = 2;
+pub const WLR_INPUT_DEVICE_TABLET: u32 = 3;
+pub const WLR_INPUT_DEVICE_TABLET_PAD: u32 = 4;
+pub const WLR_INPUT_DEVICE_SWITCH: u32 = 5;
+
+/// wlr_xdg_shell with event signals
+pub const wlr_xdg_shell = extern struct {
+    global: ?*anyopaque,
+    version: u32,
+    clients: wl_list,
+    popup_grabs: wl_list,
+    ping_timeout: u32,
+    display_destroy: wl_listener,
+    events: extern struct {
+        new_surface: wl_signal,
+        new_toplevel: wl_signal,
+        new_popup: wl_signal,
+        destroy: wl_signal,
+    },
+    data: ?*anyopaque,
+};
+
+/// wlr_xdg_surface role types
+pub const WLR_XDG_SURFACE_ROLE_NONE: u32 = 0;
+pub const WLR_XDG_SURFACE_ROLE_TOPLEVEL: u32 = 1;
+pub const WLR_XDG_SURFACE_ROLE_POPUP: u32 = 2;
+
+/// wlr_xdg_surface with event signals
+pub const wlr_xdg_surface = extern struct {
+    client: ?*anyopaque,
+    resource: ?*wl_resource,
+    surface: ?*wlr_surface,
+    link: wl_list,
+    role: u32,
+    union_field: ?*anyopaque, // toplevel or popup pointer based on role
+    popups: wl_list,
+    configured: bool,
+    scheduled_serial: u32,
+    configure_list: wl_list,
+    current: extern struct {
+        configure_serial: u32,
+        geometry: extern struct { x: i32, y: i32, width: i32, height: i32 },
+    },
+    pending: extern struct {
+        configure_serial: u32,
+        geometry: extern struct { x: i32, y: i32, width: i32, height: i32 },
+    },
+    initialized: bool,
+    initial_commit: bool,
+    events: extern struct {
+        destroy: wl_signal,
+        ping_timeout: wl_signal,
+        new_popup: wl_signal,
+        configure: wl_signal,
+        ack_configure: wl_signal,
+    },
+    data: ?*anyopaque,
+};
+
+/// wlr_xdg_toplevel with event signals
+pub const wlr_xdg_toplevel = extern struct {
+    resource: ?*wl_resource,
+    base: ?*wlr_xdg_surface,
+    parent: ?*wlr_xdg_toplevel,
+    title: ?[*:0]u8,
+    app_id: ?[*:0]u8,
+    added: bool,
+    current: extern struct {
+        max_width: u32,
+        max_height: u32,
+        min_width: u32,
+        min_height: u32,
+        maximized: bool,
+        fullscreen: bool,
+        resizing: bool,
+        activated: bool,
+        tiled: u32,
+        suspended: bool,
+    },
+    pending: extern struct {
+        max_width: u32,
+        max_height: u32,
+        min_width: u32,
+        min_height: u32,
+        maximized: bool,
+        fullscreen: bool,
+        resizing: bool,
+        activated: bool,
+        tiled: u32,
+        suspended: bool,
+    },
+    scheduled: extern struct {
+        maximized: bool,
+        fullscreen: bool,
+        resizing: bool,
+        activated: bool,
+        tiled: u32,
+        suspended: bool,
+    },
+    requested: extern struct {
+        maximized: bool,
+        minimized: bool,
+        fullscreen: bool,
+        fullscreen_output: ?*wlr_output,
+        fullscreen_output_destroy: wl_listener,
+    },
+    events: extern struct {
+        destroy: wl_signal,
+        request_maximize: wl_signal,
+        request_fullscreen: wl_signal,
+        request_minimize: wl_signal,
+        request_move: wl_signal,
+        request_resize: wl_signal,
+        request_show_window_menu: wl_signal,
+        set_parent: wl_signal,
+        set_title: wl_signal,
+        set_app_id: wl_signal,
+    },
+};
+
+/// wlr_seat with event signals
+pub const wlr_seat = extern struct {
+    global: ?*anyopaque,
+    display: ?*wl_display,
+    clients: wl_list,
+    name: [64]u8,
+    capabilities: u32,
+    accumulated_capabilities: u32,
+    last_event_serial: u32,
+    // Keyboard state
+    keyboard_state: extern struct {
+        seat: ?*wlr_seat,
+        keyboard: ?*wlr_keyboard,
+        focused_client: ?*anyopaque,
+        focused_surface: ?*wlr_surface,
+        events: extern struct {
+            focus_change: wl_signal,
+        },
+    },
+    // More fields follow but we need these events
+    events: extern struct {
+        pointer_grab_begin: wl_signal,
+        pointer_grab_end: wl_signal,
+        keyboard_grab_begin: wl_signal,
+        keyboard_grab_end: wl_signal,
+        touch_grab_begin: wl_signal,
+        touch_grab_end: wl_signal,
+        request_set_cursor: wl_signal,
+        request_set_selection: wl_signal,
+        set_selection: wl_signal,
+        request_set_primary_selection: wl_signal,
+        set_primary_selection: wl_signal,
+        request_start_drag: wl_signal,
+        start_drag: wl_signal,
+        destroy: wl_signal,
+    },
+    data: ?*anyopaque,
+};
 
 // DRM/KMS types
 pub const wlr_drm_connector = opaque {};
@@ -156,6 +450,10 @@ pub const WlrFunctions = struct {
     wl_display_run: ?*const fn (*wl_display) callconv(cc) void = null,
     wl_display_terminate: ?*const fn (*wl_display) callconv(cc) void = null,
     wl_display_add_socket_auto: ?*const fn (*wl_display) callconv(cc) ?[*:0]const u8 = null,
+
+    // Signal
+    wl_signal_add: ?*const fn (*wl_signal, *wl_listener) callconv(cc) void = null,
+    wl_list_remove: ?*const fn (*wl_list) callconv(cc) void = null,
 
     // Backend
     wlr_backend_autocreate: ?*const fn (*wl_display, ?*anyopaque) callconv(cc) ?*wlr_backend = null,
@@ -175,27 +473,59 @@ pub const WlrFunctions = struct {
     // Scene
     wlr_scene_create: ?*const fn () callconv(cc) ?*wlr_scene = null,
     wlr_scene_attach_output_layout: ?*const fn (*wlr_scene, *wlr_output_layout) callconv(cc) bool = null,
+    wlr_scene_output_create: ?*const fn (*wlr_scene, *wlr_output) callconv(cc) ?*wlr_scene_output = null,
 
     // Output
     wlr_output_layout_create: ?*const fn (*wl_display) callconv(cc) ?*wlr_output_layout = null,
+    wlr_output_layout_add_auto: ?*const fn (*wlr_output_layout, *wlr_output) callconv(cc) ?*anyopaque = null,
     wlr_output_enable: ?*const fn (*wlr_output, bool) callconv(cc) void = null,
     wlr_output_commit: ?*const fn (*wlr_output) callconv(cc) bool = null,
+    wlr_output_commit_state: ?*const fn (*wlr_output, *anyopaque) callconv(cc) bool = null,
     wlr_output_set_mode: ?*const fn (*wlr_output, ?*anyopaque) callconv(cc) void = null,
     wlr_output_preferred_mode: ?*const fn (*wlr_output) callconv(cc) ?*anyopaque = null,
+    wlr_output_state_init: ?*const fn (*anyopaque) callconv(cc) void = null,
+    wlr_output_state_finish: ?*const fn (*anyopaque) callconv(cc) void = null,
+    wlr_output_state_set_enabled: ?*const fn (*anyopaque, bool) callconv(cc) void = null,
+    wlr_output_state_set_mode: ?*const fn (*anyopaque, ?*anyopaque) callconv(cc) void = null,
 
     // XDG Shell
     wlr_xdg_shell_create: ?*const fn (*wl_display, u32) callconv(cc) ?*wlr_xdg_shell = null,
     wlr_xdg_toplevel_set_fullscreen: ?*const fn (*wlr_xdg_toplevel, bool) callconv(cc) u32 = null,
+    wlr_xdg_toplevel_set_activated: ?*const fn (*wlr_xdg_toplevel, bool) callconv(cc) u32 = null,
     wlr_xdg_toplevel_send_close: ?*const fn (*wlr_xdg_toplevel) callconv(cc) void = null,
+    wlr_xdg_surface_schedule_configure: ?*const fn (*wlr_xdg_surface) callconv(cc) u32 = null,
 
     // Seat
     wlr_seat_create: ?*const fn (*wl_display, [*:0]const u8) callconv(cc) ?*wlr_seat = null,
+    wlr_seat_set_capabilities: ?*const fn (*wlr_seat, u32) callconv(cc) void = null,
+    wlr_seat_set_keyboard: ?*const fn (*wlr_seat, ?*wlr_keyboard) callconv(cc) void = null,
     wlr_seat_keyboard_notify_enter: ?*const fn (*wlr_seat, *wlr_surface, ?[*]u32, usize, ?*anyopaque) callconv(cc) void = null,
+    wlr_seat_keyboard_notify_key: ?*const fn (*wlr_seat, u32, u32, u32) callconv(cc) void = null,
+    wlr_seat_keyboard_notify_modifiers: ?*const fn (*wlr_seat, ?*anyopaque) callconv(cc) void = null,
+    wlr_seat_pointer_notify_enter: ?*const fn (*wlr_seat, *wlr_surface, f64, f64) callconv(cc) void = null,
+    wlr_seat_pointer_notify_motion: ?*const fn (*wlr_seat, u32, f64, f64) callconv(cc) void = null,
+    wlr_seat_pointer_notify_button: ?*const fn (*wlr_seat, u32, u32, u32) callconv(cc) u32 = null,
+    wlr_seat_pointer_notify_axis: ?*const fn (*wlr_seat, u32, u32, f64, i32, u32) callconv(cc) void = null,
+    wlr_seat_pointer_notify_frame: ?*const fn (*wlr_seat) callconv(cc) void = null,
 
     // Cursor
     wlr_cursor_create: ?*const fn () callconv(cc) ?*wlr_cursor = null,
+    wlr_cursor_attach_output_layout: ?*const fn (*wlr_cursor, *wlr_output_layout) callconv(cc) void = null,
+    wlr_cursor_warp_absolute: ?*const fn (*wlr_cursor, ?*anyopaque, f64, f64) callconv(cc) void = null,
+    wlr_cursor_move: ?*const fn (*wlr_cursor, ?*anyopaque, f64, f64) callconv(cc) void = null,
     wlr_xcursor_manager_create: ?*const fn (?[*:0]const u8, u32) callconv(cc) ?*wlr_xcursor_manager = null,
+    wlr_xcursor_manager_load: ?*const fn (*wlr_xcursor_manager, f32) callconv(cc) bool = null,
+    wlr_cursor_set_xcursor: ?*const fn (*wlr_cursor, *wlr_xcursor_manager, [*:0]const u8) callconv(cc) void = null,
+
+    // Keyboard
+    wlr_keyboard_set_keymap: ?*const fn (*wlr_keyboard, ?*anyopaque) callconv(cc) bool = null,
+    wlr_keyboard_set_repeat_info: ?*const fn (*wlr_keyboard, i32, i32) callconv(cc) void = null,
 };
+
+/// Seat capabilities bitflags
+pub const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
+pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
+pub const WL_SEAT_CAPABILITY_TOUCH: u32 = 4;
 
 // ============================================================================
 // Core Types
@@ -490,6 +820,379 @@ pub const FrameStats = struct {
 };
 
 // ============================================================================
+// Event Callbacks (C calling convention for wlroots)
+// ============================================================================
+
+/// Container-of helper to get parent struct from listener field
+fn containerOf(comptime T: type, comptime field: []const u8, ptr: *wl_listener) *T {
+    const field_offset = @offsetOf(T, field);
+    const byte_ptr: [*]u8 = @ptrCast(ptr);
+    return @alignCast(@ptrCast(byte_ptr - field_offset));
+}
+
+/// Callback: New output connected
+fn onNewOutput(listener: *wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const output: *wlr_output = @ptrCast(@alignCast(data orelse return));
+    const ctx = containerOf(Context.Listeners, "new_output", listener);
+    const self: *Context = @alignCast(@fieldParentPtr("listeners", ctx));
+
+    std.log.info("New output: {s}", .{&output.name});
+
+    // Create output listeners
+    const out_listeners = self.allocator.create(Context.OutputListeners) catch {
+        std.log.err("Failed to allocate output listeners", .{});
+        return;
+    };
+    out_listeners.* = .{
+        .output = output,
+        .ctx = self,
+    };
+
+    // Set up frame listener
+    out_listeners.frame.notify = onOutputFrame;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&output.events.frame, &out_listeners.frame);
+    }
+
+    // Set up destroy listener
+    out_listeners.destroy.notify = onOutputDestroy;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&output.events.destroy, &out_listeners.destroy);
+    }
+
+    // Configure and enable output
+    const preferred_mode = if (self.wlr.wlr_output_preferred_mode) |get_mode|
+        get_mode(output)
+    else
+        null;
+
+    if (self.wlr.wlr_output_set_mode) |set_mode| {
+        set_mode(output, preferred_mode);
+    }
+    if (self.wlr.wlr_output_enable) |enable| {
+        enable(output, true);
+    }
+    if (self.wlr.wlr_output_commit) |commit| {
+        if (!commit(output)) {
+            std.log.warn("Failed to commit output configuration", .{});
+        }
+    }
+
+    // Add to output layout
+    if (self.output_layout != null and self.wlr.wlr_output_layout_add_auto != null) {
+        _ = self.wlr.wlr_output_layout_add_auto.?(self.output_layout.?, output);
+    }
+
+    // Create scene output for rendering
+    if (self.scene != null and self.wlr.wlr_scene_output_create != null) {
+        _ = self.wlr.wlr_scene_output_create.?(self.scene.?, output);
+    }
+
+    // Store OutputInfo
+    var info = OutputInfo{
+        .width = @intCast(output.width),
+        .height = @intCast(output.height),
+        .refresh_mhz = @intCast(output.refresh),
+        .physical_width_mm = @intCast(output.phys_width),
+        .physical_height_mm = @intCast(output.phys_height),
+        .vrr_capable = output.adaptive_sync_status != 0,
+        .scale = output.scale,
+    };
+
+    // Copy name
+    const name_len = std.mem.indexOfScalar(u8, &output.name, 0) orelse output.name.len;
+    @memcpy(info.name[0..@min(name_len, info.name.len)], output.name[0..@min(name_len, info.name.len)]);
+    info.name_len = @min(name_len, info.name.len);
+
+    // Copy make
+    const make_len = std.mem.indexOfScalar(u8, &output.make, 0) orelse output.make.len;
+    @memcpy(info.make[0..@min(make_len, info.make.len)], output.make[0..@min(make_len, info.make.len)]);
+    info.make_len = @min(make_len, info.make.len);
+
+    // Copy model
+    const model_len = std.mem.indexOfScalar(u8, &output.model, 0) orelse output.model.len;
+    @memcpy(info.model[0..@min(model_len, info.model.len)], output.model[0..@min(model_len, info.model.len)]);
+    info.model_len = @min(model_len, info.model.len);
+
+    self.outputs.append(self.allocator, info) catch {
+        std.log.err("Failed to store output info", .{});
+        return;
+    };
+
+    // Track output pointer to index mapping
+    self.wlr_outputs.put(self.allocator, output, self.outputs.items.len - 1) catch {
+        std.log.err("Failed to track output mapping", .{});
+    };
+
+    std.log.info("Output configured: {s} {}x{}@{}Hz", .{
+        info.name[0..info.name_len],
+        info.width,
+        info.height,
+        info.refresh_mhz / 1000,
+    });
+}
+
+/// Callback: Output frame (time to render)
+fn onOutputFrame(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const out_listeners = containerOf(Context.OutputListeners, "frame", listener);
+    const self = out_listeners.ctx;
+    _ = out_listeners.output;
+
+    // Update frame stats and process HUD
+    self.processFrame();
+}
+
+/// Callback: Output destroyed
+fn onOutputDestroy(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const out_listeners = containerOf(Context.OutputListeners, "destroy", listener);
+    const self = out_listeners.ctx;
+    const output = out_listeners.output;
+
+    std.log.info("Output destroyed: {s}", .{&output.name});
+
+    // Remove from tracking
+    if (self.wlr_outputs.fetchRemove(output)) |kv| {
+        const idx = kv.value;
+        if (idx < self.outputs.items.len) {
+            _ = self.outputs.orderedRemove(idx);
+        }
+    }
+
+    // Remove listener from signal
+    if (self.wlr.wl_list_remove) |remove| {
+        remove(&out_listeners.frame.link);
+        remove(&out_listeners.destroy.link);
+    }
+
+    self.allocator.destroy(out_listeners);
+}
+
+/// Callback: New input device
+fn onNewInput(listener: *wl_listener, data: ?*anyopaque) callconv(.c) void {
+    _ = data;
+    const ctx = containerOf(Context.Listeners, "new_input", listener);
+    const self: *Context = @alignCast(@fieldParentPtr("listeners", ctx));
+
+    // Input device handling - the data is a wlr_input_device
+    // For now, we auto-configure keyboards
+    // Full implementation would check device type and set up appropriate handlers
+
+    std.log.info("New input device connected", .{});
+
+    // Update seat capabilities
+    if (self.seat != null and self.wlr.wlr_seat_set_capabilities != null) {
+        self.wlr.wlr_seat_set_capabilities.?(
+            self.seat.?,
+            WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD,
+        );
+    }
+}
+
+/// Callback: New XDG toplevel (application window)
+fn onNewXdgToplevel(listener: *wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const toplevel: *wlr_xdg_toplevel = @ptrCast(@alignCast(data orelse return));
+    const ctx = containerOf(Context.Listeners, "new_xdg_toplevel", listener);
+    const self: *Context = @alignCast(@fieldParentPtr("listeners", ctx));
+
+    const window_id = self.next_window_id;
+    self.next_window_id += 1;
+
+    std.log.info("New XDG toplevel: id={}", .{window_id});
+
+    // Create toplevel listeners
+    const tl_listeners = self.allocator.create(Context.ToplevelListeners) catch {
+        std.log.err("Failed to allocate toplevel listeners", .{});
+        return;
+    };
+    tl_listeners.* = .{
+        .toplevel = toplevel,
+        .ctx = self,
+        .window_id = window_id,
+    };
+
+    // Set up destroy listener
+    tl_listeners.destroy.notify = onToplevelDestroy;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&toplevel.events.destroy, &tl_listeners.destroy);
+    }
+
+    // Set up fullscreen request listener
+    tl_listeners.request_fullscreen.notify = onToplevelRequestFullscreen;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&toplevel.events.request_fullscreen, &tl_listeners.request_fullscreen);
+    }
+
+    // Set up title change listener
+    tl_listeners.set_title.notify = onToplevelSetTitle;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&toplevel.events.set_title, &tl_listeners.set_title);
+    }
+
+    // Set up app_id change listener
+    tl_listeners.set_app_id.notify = onToplevelSetAppId;
+    if (self.wlr.wl_signal_add) |add| {
+        add(&toplevel.events.set_app_id, &tl_listeners.set_app_id);
+    }
+
+    // Create WindowInfo
+    var window = WindowInfo{
+        .id = window_id,
+    };
+
+    // Copy title if available
+    if (toplevel.title) |title_ptr| {
+        const title = std.mem.sliceTo(title_ptr, 0);
+        const len = @min(title.len, window.title.len);
+        @memcpy(window.title[0..len], title[0..len]);
+        window.title_len = len;
+    }
+
+    // Copy app_id if available
+    if (toplevel.app_id) |app_id_ptr| {
+        const app_id = std.mem.sliceTo(app_id_ptr, 0);
+        const len = @min(app_id.len, window.app_id.len);
+        @memcpy(window.app_id[0..len], app_id[0..len]);
+        window.app_id_len = len;
+    }
+
+    // Get geometry from surface if available
+    if (toplevel.base) |surface| {
+        window.x = surface.current.geometry.x;
+        window.y = surface.current.geometry.y;
+        window.width = @intCast(surface.current.geometry.width);
+        window.height = @intCast(surface.current.geometry.height);
+    }
+
+    window.fullscreen = toplevel.current.fullscreen;
+    window.maximized = toplevel.current.maximized;
+
+    self.windows.append(self.allocator, window) catch {
+        std.log.err("Failed to store window info", .{});
+        return;
+    };
+
+    // Track toplevel
+    self.xdg_toplevels.put(self.allocator, window_id, toplevel) catch {
+        std.log.err("Failed to track toplevel", .{});
+    };
+
+    // Focus new window
+    self.focused_window_id = window_id;
+    if (self.wlr.wlr_xdg_toplevel_set_activated) |activate| {
+        _ = activate(toplevel, true);
+    }
+
+    std.log.info("Window created: id={} title=\"{s}\" app_id=\"{s}\"", .{
+        window_id,
+        window.title[0..window.title_len],
+        window.app_id[0..window.app_id_len],
+    });
+}
+
+/// Callback: XDG toplevel destroyed
+fn onToplevelDestroy(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const tl_listeners = containerOf(Context.ToplevelListeners, "destroy", listener);
+    const self = tl_listeners.ctx;
+    const window_id = tl_listeners.window_id;
+
+    std.log.info("Toplevel destroyed: id={}", .{window_id});
+
+    // Remove from windows list
+    for (self.windows.items, 0..) |_, i| {
+        if (self.windows.items[i].id == window_id) {
+            _ = self.windows.orderedRemove(i);
+            break;
+        }
+    }
+
+    // Remove from toplevel tracking
+    _ = self.xdg_toplevels.remove(window_id);
+
+    // Update focus
+    if (self.focused_window_id == window_id) {
+        self.focused_window_id = if (self.windows.items.len > 0)
+            self.windows.items[0].id
+        else
+            null;
+    }
+
+    // Remove listeners
+    if (self.wlr.wl_list_remove) |remove| {
+        remove(&tl_listeners.destroy.link);
+        remove(&tl_listeners.request_fullscreen.link);
+        remove(&tl_listeners.set_title.link);
+        remove(&tl_listeners.set_app_id.link);
+    }
+
+    self.allocator.destroy(tl_listeners);
+}
+
+/// Callback: Toplevel requests fullscreen
+fn onToplevelRequestFullscreen(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const tl_listeners = containerOf(Context.ToplevelListeners, "request_fullscreen", listener);
+    const self = tl_listeners.ctx;
+    const toplevel = tl_listeners.toplevel;
+    const window_id = tl_listeners.window_id;
+
+    const requested = toplevel.requested.fullscreen;
+    std.log.info("Toplevel {} requested fullscreen: {}", .{ window_id, requested });
+
+    // Grant fullscreen request
+    if (self.wlr.wlr_xdg_toplevel_set_fullscreen) |set_fs| {
+        _ = set_fs(toplevel, requested);
+    }
+
+    // Update window state
+    for (self.windows.items) |*window| {
+        if (window.id == window_id) {
+            window.fullscreen = requested;
+            window.can_direct_scanout = requested and self.config.direct_scanout;
+            break;
+        }
+    }
+}
+
+/// Callback: Toplevel title changed
+fn onToplevelSetTitle(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const tl_listeners = containerOf(Context.ToplevelListeners, "set_title", listener);
+    const self = tl_listeners.ctx;
+    const toplevel = tl_listeners.toplevel;
+    const window_id = tl_listeners.window_id;
+
+    for (self.windows.items) |*window| {
+        if (window.id == window_id) {
+            if (toplevel.title) |title_ptr| {
+                const title = std.mem.sliceTo(title_ptr, 0);
+                const len = @min(title.len, window.title.len);
+                @memcpy(window.title[0..len], title[0..len]);
+                window.title_len = len;
+            }
+            break;
+        }
+    }
+}
+
+/// Callback: Toplevel app_id changed
+fn onToplevelSetAppId(listener: *wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const tl_listeners = containerOf(Context.ToplevelListeners, "set_app_id", listener);
+    const self = tl_listeners.ctx;
+    const toplevel = tl_listeners.toplevel;
+    const window_id = tl_listeners.window_id;
+
+    for (self.windows.items) |*window| {
+        if (window.id == window_id) {
+            if (toplevel.app_id) |app_id_ptr| {
+                const app_id = std.mem.sliceTo(app_id_ptr, 0);
+                const len = @min(app_id.len, window.app_id.len);
+                @memcpy(window.app_id[0..len], app_id[0..len]);
+                window.app_id_len = len;
+            }
+            break;
+        }
+    }
+}
+
+// ============================================================================
 // Compositor Context
 // ============================================================================
 
@@ -552,7 +1255,65 @@ pub const Context = struct {
     // XDG toplevel tracking for window management
     xdg_toplevels: std.AutoHashMapUnmanaged(u64, *wlr_xdg_toplevel) = .{},
 
+    // wlroots output tracking (links wlr_output to OutputInfo)
+    wlr_outputs: std.AutoHashMapUnmanaged(*wlr_output, usize) = .{}, // output ptr -> index in outputs
+
+    // Event listeners
+    listeners: Listeners = .{},
+
     const Self = @This();
+
+    /// Event listener storage
+    pub const Listeners = struct {
+        // Backend events
+        new_output: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        new_input: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+
+        // XDG shell events
+        new_xdg_toplevel: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+
+        // Cursor events
+        cursor_motion: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        cursor_motion_absolute: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        cursor_button: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        cursor_axis: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        cursor_frame: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+
+        // Seat events
+        request_cursor: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        request_set_selection: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+    };
+
+    /// Per-output listener storage
+    pub const OutputListeners = struct {
+        output: *wlr_output,
+        ctx: *Context,
+        frame: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        request_state: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        destroy: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+    };
+
+    /// Per-toplevel listener storage
+    pub const ToplevelListeners = struct {
+        toplevel: *wlr_xdg_toplevel,
+        ctx: *Context,
+        window_id: u64,
+        map: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        unmap: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        destroy: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        request_fullscreen: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        set_title: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        set_app_id: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+    };
+
+    /// Per-keyboard listener storage
+    pub const KeyboardListeners = struct {
+        keyboard: *wlr_keyboard,
+        ctx: *Context,
+        modifiers: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        key: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+        destroy: wl_listener = .{ .link = .{ .prev = null, .next = null }, .notify = undefined },
+    };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) CompositorError!*Self {
         const self = allocator.create(Self) catch return CompositorError.OutOfMemory;
@@ -646,6 +1407,9 @@ pub const Context = struct {
             self.display = null;
         }
 
+        // Cleanup tracking maps
+        self.wlr_outputs.deinit(self.allocator);
+        self.xdg_toplevels.deinit(self.allocator);
         self.outputs.deinit(self.allocator);
         self.windows.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -672,27 +1436,84 @@ pub const Context = struct {
             if (wl_lib != null) break;
         }
         if (wl_lib != null) {
+            // Display functions
             self.wlr.wl_display_create = @ptrCast(c.dlsym(wl_lib, "wl_display_create"));
             self.wlr.wl_display_destroy = @ptrCast(c.dlsym(wl_lib, "wl_display_destroy"));
             self.wlr.wl_display_get_event_loop = @ptrCast(c.dlsym(wl_lib, "wl_display_get_event_loop"));
             self.wlr.wl_display_run = @ptrCast(c.dlsym(wl_lib, "wl_display_run"));
             self.wlr.wl_display_terminate = @ptrCast(c.dlsym(wl_lib, "wl_display_terminate"));
             self.wlr.wl_display_add_socket_auto = @ptrCast(c.dlsym(wl_lib, "wl_display_add_socket_auto"));
+
+            // Signal/listener functions
+            self.wlr.wl_signal_add = @ptrCast(c.dlsym(wl_lib, "wl_signal_add"));
+            self.wlr.wl_list_remove = @ptrCast(c.dlsym(wl_lib, "wl_list_remove"));
         }
 
+        // Backend
         self.wlr.wlr_backend_autocreate = @ptrCast(c.dlsym(handle, "wlr_backend_autocreate"));
         self.wlr.wlr_backend_destroy = @ptrCast(c.dlsym(handle, "wlr_backend_destroy"));
         self.wlr.wlr_backend_start = @ptrCast(c.dlsym(handle, "wlr_backend_start"));
+
+        // Renderer
         self.wlr.wlr_renderer_autocreate = @ptrCast(c.dlsym(handle, "wlr_renderer_autocreate"));
         self.wlr.wlr_renderer_init_wl_display = @ptrCast(c.dlsym(handle, "wlr_renderer_init_wl_display"));
+
+        // Allocator
         self.wlr.wlr_allocator_autocreate = @ptrCast(c.dlsym(handle, "wlr_allocator_autocreate"));
+
+        // Compositor
         self.wlr.wlr_compositor_create = @ptrCast(c.dlsym(handle, "wlr_compositor_create"));
+
+        // Scene
         self.wlr.wlr_scene_create = @ptrCast(c.dlsym(handle, "wlr_scene_create"));
+        self.wlr.wlr_scene_attach_output_layout = @ptrCast(c.dlsym(handle, "wlr_scene_attach_output_layout"));
+        self.wlr.wlr_scene_output_create = @ptrCast(c.dlsym(handle, "wlr_scene_output_create"));
+
+        // Output
         self.wlr.wlr_output_layout_create = @ptrCast(c.dlsym(handle, "wlr_output_layout_create"));
+        self.wlr.wlr_output_layout_add_auto = @ptrCast(c.dlsym(handle, "wlr_output_layout_add_auto"));
+        self.wlr.wlr_output_enable = @ptrCast(c.dlsym(handle, "wlr_output_enable"));
+        self.wlr.wlr_output_commit = @ptrCast(c.dlsym(handle, "wlr_output_commit"));
+        self.wlr.wlr_output_commit_state = @ptrCast(c.dlsym(handle, "wlr_output_commit_state"));
+        self.wlr.wlr_output_set_mode = @ptrCast(c.dlsym(handle, "wlr_output_set_mode"));
+        self.wlr.wlr_output_preferred_mode = @ptrCast(c.dlsym(handle, "wlr_output_preferred_mode"));
+        self.wlr.wlr_output_state_init = @ptrCast(c.dlsym(handle, "wlr_output_state_init"));
+        self.wlr.wlr_output_state_finish = @ptrCast(c.dlsym(handle, "wlr_output_state_finish"));
+        self.wlr.wlr_output_state_set_enabled = @ptrCast(c.dlsym(handle, "wlr_output_state_set_enabled"));
+        self.wlr.wlr_output_state_set_mode = @ptrCast(c.dlsym(handle, "wlr_output_state_set_mode"));
+
+        // XDG Shell
         self.wlr.wlr_xdg_shell_create = @ptrCast(c.dlsym(handle, "wlr_xdg_shell_create"));
+        self.wlr.wlr_xdg_toplevel_set_fullscreen = @ptrCast(c.dlsym(handle, "wlr_xdg_toplevel_set_fullscreen"));
+        self.wlr.wlr_xdg_toplevel_set_activated = @ptrCast(c.dlsym(handle, "wlr_xdg_toplevel_set_activated"));
+        self.wlr.wlr_xdg_toplevel_send_close = @ptrCast(c.dlsym(handle, "wlr_xdg_toplevel_send_close"));
+        self.wlr.wlr_xdg_surface_schedule_configure = @ptrCast(c.dlsym(handle, "wlr_xdg_surface_schedule_configure"));
+
+        // Seat
         self.wlr.wlr_seat_create = @ptrCast(c.dlsym(handle, "wlr_seat_create"));
+        self.wlr.wlr_seat_set_capabilities = @ptrCast(c.dlsym(handle, "wlr_seat_set_capabilities"));
+        self.wlr.wlr_seat_set_keyboard = @ptrCast(c.dlsym(handle, "wlr_seat_set_keyboard"));
+        self.wlr.wlr_seat_keyboard_notify_enter = @ptrCast(c.dlsym(handle, "wlr_seat_keyboard_notify_enter"));
+        self.wlr.wlr_seat_keyboard_notify_key = @ptrCast(c.dlsym(handle, "wlr_seat_keyboard_notify_key"));
+        self.wlr.wlr_seat_keyboard_notify_modifiers = @ptrCast(c.dlsym(handle, "wlr_seat_keyboard_notify_modifiers"));
+        self.wlr.wlr_seat_pointer_notify_enter = @ptrCast(c.dlsym(handle, "wlr_seat_pointer_notify_enter"));
+        self.wlr.wlr_seat_pointer_notify_motion = @ptrCast(c.dlsym(handle, "wlr_seat_pointer_notify_motion"));
+        self.wlr.wlr_seat_pointer_notify_button = @ptrCast(c.dlsym(handle, "wlr_seat_pointer_notify_button"));
+        self.wlr.wlr_seat_pointer_notify_axis = @ptrCast(c.dlsym(handle, "wlr_seat_pointer_notify_axis"));
+        self.wlr.wlr_seat_pointer_notify_frame = @ptrCast(c.dlsym(handle, "wlr_seat_pointer_notify_frame"));
+
+        // Cursor
         self.wlr.wlr_cursor_create = @ptrCast(c.dlsym(handle, "wlr_cursor_create"));
+        self.wlr.wlr_cursor_attach_output_layout = @ptrCast(c.dlsym(handle, "wlr_cursor_attach_output_layout"));
+        self.wlr.wlr_cursor_warp_absolute = @ptrCast(c.dlsym(handle, "wlr_cursor_warp_absolute"));
+        self.wlr.wlr_cursor_move = @ptrCast(c.dlsym(handle, "wlr_cursor_move"));
         self.wlr.wlr_xcursor_manager_create = @ptrCast(c.dlsym(handle, "wlr_xcursor_manager_create"));
+        self.wlr.wlr_xcursor_manager_load = @ptrCast(c.dlsym(handle, "wlr_xcursor_manager_load"));
+        self.wlr.wlr_cursor_set_xcursor = @ptrCast(c.dlsym(handle, "wlr_cursor_set_xcursor"));
+
+        // Keyboard
+        self.wlr.wlr_keyboard_set_keymap = @ptrCast(c.dlsym(handle, "wlr_keyboard_set_keymap"));
+        self.wlr.wlr_keyboard_set_repeat_info = @ptrCast(c.dlsym(handle, "wlr_keyboard_set_repeat_info"));
 
         std.log.info("wlroots functions loaded successfully", .{});
     }
@@ -831,7 +1652,24 @@ pub const Context = struct {
         else
             null;
 
-        // 12. Add socket for clients to connect
+        // 12. Attach cursor to output layout
+        if (self.cursor != null and self.output_layout != null) {
+            if (self.wlr.wlr_cursor_attach_output_layout) |attach| {
+                attach(self.cursor.?, self.output_layout.?);
+            }
+        }
+
+        // 13. Load cursor theme
+        if (self.xcursor_manager != null) {
+            if (self.wlr.wlr_xcursor_manager_load) |load| {
+                _ = load(self.xcursor_manager.?, 1.0);
+            }
+        }
+
+        // 14. Set up event listeners BEFORE starting backend
+        self.setupEventListeners();
+
+        // 15. Add socket for clients to connect
         const socket = if (self.wlr.wl_display_add_socket_auto) |add_socket|
             add_socket(self.display.?)
         else
@@ -845,7 +1683,7 @@ pub const Context = struct {
             return CompositorError.SocketCreateFailed;
         }
 
-        // 13. Start the backend (this triggers output discovery)
+        // 16. Start the backend (this triggers output discovery via listeners)
         if (self.wlr.wlr_backend_start) |start_fn| {
             if (!start_fn(self.backend.?)) {
                 return CompositorError.BackendStartFailed;
@@ -854,6 +1692,36 @@ pub const Context = struct {
         std.log.info("Backend started successfully", .{});
 
         std.log.info("VENOM compositor initialized", .{});
+    }
+
+    /// Set up wlroots event listeners
+    fn setupEventListeners(self: *Self) void {
+        std.log.info("Setting up event listeners...", .{});
+
+        const signal_add = self.wlr.wl_signal_add orelse {
+            std.log.warn("wl_signal_add not available, skipping listeners", .{});
+            return;
+        };
+
+        // Backend: new_output event
+        if (self.backend) |backend| {
+            self.listeners.new_output.notify = onNewOutput;
+            signal_add(&backend.events.new_output, &self.listeners.new_output);
+            std.log.info("Registered new_output listener", .{});
+
+            self.listeners.new_input.notify = onNewInput;
+            signal_add(&backend.events.new_input, &self.listeners.new_input);
+            std.log.info("Registered new_input listener", .{});
+        }
+
+        // XDG Shell: new_toplevel event
+        if (self.xdg_shell) |shell| {
+            self.listeners.new_xdg_toplevel.notify = onNewXdgToplevel;
+            signal_add(&shell.events.new_toplevel, &self.listeners.new_xdg_toplevel);
+            std.log.info("Registered new_xdg_toplevel listener", .{});
+        }
+
+        std.log.info("Event listeners configured", .{});
     }
 
     /// Stub mode initialization for development/testing
@@ -920,9 +1788,15 @@ pub const Context = struct {
         }
     }
 
+    /// Get current time in nanoseconds (monotonic)
+    fn getNanoTimestamp() i128 {
+        const ts = std.posix.clock_gettime(.MONOTONIC) catch return 0;
+        return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+    }
+
     /// Process one frame (non-blocking)
     pub fn processFrame(self: *Self) void {
-        const now = std.time.nanoTimestamp();
+        const now = getNanoTimestamp();
         if (self.last_frame_time > 0) {
             self.stats.frame_time_ns = @intCast(now - self.last_frame_time);
         }
@@ -1186,7 +2060,7 @@ pub fn getWlrootsVersion() []const u8 {
 
 /// Check if running under Wayland
 pub fn isWaylandSession() bool {
-    return std.posix.getenv("WAYLAND_DISPLAY") != null;
+    return std.c.getenv("WAYLAND_DISPLAY") != null;
 }
 
 /// Check if VRR is supported by compositor

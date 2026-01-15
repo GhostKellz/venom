@@ -80,7 +80,7 @@ pub const GamescopeCommand = struct {
 
 pub const GamescopeSession = struct {
     allocator: std.mem.Allocator,
-    child: ?std.process.Child = null,
+    pid: ?std.posix.pid_t = null,
     running: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) GamescopeSession {
@@ -90,55 +90,73 @@ pub const GamescopeSession = struct {
     }
 
     pub fn deinit(self: *GamescopeSession) void {
-        if (self.child) |*child| {
-            _ = child.kill() catch null;
-        }
-        self.child = null;
-        self.running = false;
+        self.stop();
     }
 
     pub fn isRunning(self: *const GamescopeSession) bool {
-        if (self.child) |child| {
-            return child.id != 0;
+        if (self.pid) |pid| {
+            // Check if process is still alive using raw syscall
+            // kill syscall: syscall(__NR_kill, pid, sig)
+            const result = std.os.linux.syscall2(.kill, @as(usize, @bitCast(@as(isize, pid))), 0);
+            const errno: isize = @bitCast(result);
+            return errno == 0 or errno != -3; // -ESRCH = -3
         }
         return false;
     }
 
     pub fn start(self: *GamescopeSession, argv: []const []const u8) !void {
         if (self.isRunning()) return;
+        if (argv.len == 0) return error.InvalidArgument;
 
-        var child = std.process.Child.init(argv, self.allocator);
-        try child.spawn();
-        self.child = child;
+        // Convert argv to C format for execve - use sentinel-terminated array
+        var argv_buf: [257:null]?[*:0]const u8 = @splat(null);
+        for (argv, 0..) |arg, i| {
+            if (i >= 256) break;
+            // Copy to null-terminated buffer
+            const arg_z = self.allocator.dupeZ(u8, arg) catch return error.OutOfMemory;
+            argv_buf[i] = arg_z;
+        }
+
+        const pid = std.c.fork();
+        if (pid < 0) return error.ForkFailed;
+
+        if (pid == 0) {
+            // Child process - exec the command
+            _ = std.c.execve(argv_buf[0].?, &argv_buf, std.c.environ);
+            std.c._exit(127); // exec failed
+        }
+
+        // Parent process
+        self.pid = pid;
         self.running = true;
     }
 
     pub fn wait(self: *GamescopeSession) !void {
-        if (self.child) |*child| {
-            _ = try child.wait();
+        if (self.pid) |pid| {
+            // Use C waitpid
+            var status: c_int = 0;
+            _ = std.c.waitpid(pid, &status, 0);
             self.running = false;
-            self.child = null;
+            self.pid = null;
         }
     }
 
     pub fn stop(self: *GamescopeSession) void {
-        if (self.child) |*child| {
-            _ = child.kill() catch null;
-            self.child = null;
+        if (self.pid) |pid| {
+            _ = std.os.linux.syscall2(.kill, @as(usize, @bitCast(@as(isize, pid))), 15); // SIGTERM = 15
+            self.pid = null;
         }
         self.running = false;
     }
 };
 
 pub fn isGamescopePresent() bool {
-    std.fs.accessAbsolute("/usr/bin/gamescope", .{}) catch {
-        return false;
-    };
-    return true;
+    const result = std.c.access("/usr/bin/gamescope", 0); // F_OK = 0
+    return result == 0;
 }
 
 pub fn getGamescopeBinary() []const u8 {
-    if (std.posix.getenv("GAMESCOPE_BINARY")) |value| {
+    if (std.c.getenv("GAMESCOPE_BINARY")) |value| {
         return std.mem.sliceTo(value, 0);
     }
     return "/usr/bin/gamescope";
@@ -334,10 +352,10 @@ pub fn getDesktopOptions(width: u32, height: u32, refresh_hz: u32) GamescopeOpti
 }
 
 pub fn detectNestedSession() enum { none, gamescope, wlroots } {
-    if (std.posix.getenv("GAMESCOPE_WAYLAND_DISPLAY") != null or std.posix.getenv("GAMESCOPE_SESSION_ID") != null) {
+    if (std.c.getenv("GAMESCOPE_WAYLAND_DISPLAY") != null or std.c.getenv("GAMESCOPE_SESSION_ID") != null) {
         return .gamescope;
     }
-    if (std.posix.getenv("WAYLAND_DISPLAY") != null) {
+    if (std.c.getenv("WAYLAND_DISPLAY") != null) {
         // Default assumption: wlroots-based compositor if wlroots available
         if (@hasDecl(@import("compositor.zig"), "getWlrootsStatus")) {
             const status = @import("compositor.zig").getWlrootsStatus();

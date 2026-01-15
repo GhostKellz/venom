@@ -32,6 +32,10 @@ pub const sessions = @import("sessions.zig");
 pub const governor = @import("governor.zig");
 pub const numa = @import("numa.zig");
 pub const proton = @import("proton.zig");
+pub const profiles = @import("profiles.zig");
+
+// Re-export nvshader from nvprime (don't duplicate)
+pub const shader_cache = nvprime.nvruntime.nvshader;
 
 pub const version = "0.1.0";
 
