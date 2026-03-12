@@ -110,7 +110,7 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const path_z: [*:0]const u8 = @ptrCast(&path_buf);
 
     const fd = std.posix.openatZ(std.posix.AT.FDCWD, path_z, .{}, 0) catch return error.ReadError;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [128]u8 = undefined;
     const len = std.posix.read(fd, &buf) catch return error.ReadError;
@@ -127,7 +127,7 @@ fn writeFile(path: []const u8, value: []const u8) !void {
     const path_z: [*:0]const u8 = @ptrCast(&path_buf);
 
     const fd = std.posix.openatZ(std.posix.AT.FDCWD, path_z, .{ .ACCMODE = .WRONLY }, 0) catch return error.WriteError;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const result = std.c.write(fd, value.ptr, value.len);
     if (result < 0) return error.WriteError;
@@ -275,7 +275,7 @@ pub fn setBoost(enabled: bool) !void {
 
     // Try AMD path first
     if (std.posix.openatZ(std.posix.AT.FDCWD, amd_path, .{ .ACCMODE = .WRONLY }, 0)) |fd| {
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
         const value: []const u8 = if (enabled) "1" else "0";
         const result = std.c.write(fd, value.ptr, value.len);
         if (result >= 0) return;
@@ -283,7 +283,7 @@ pub fn setBoost(enabled: bool) !void {
 
     // Try Intel path
     if (std.posix.openatZ(std.posix.AT.FDCWD, intel_path, .{ .ACCMODE = .WRONLY }, 0)) |fd| {
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
         const value: []const u8 = if (enabled) "0" else "1"; // Inverted
         const result = std.c.write(fd, value.ptr, value.len);
         if (result >= 0) return;

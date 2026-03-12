@@ -362,7 +362,7 @@ pub fn isSteamRunning() bool {
             path_z[comm_path.len] = 0;
 
             if (std.posix.openatZ(std.posix.AT.FDCWD, @ptrCast(&path_z), .{}, 0)) |fd| {
-                defer std.posix.close(fd);
+                defer _ = std.c.close(fd);
                 var buf: [32]u8 = undefined;
                 if (std.posix.read(fd, &buf)) |len| {
                     const comm = std.mem.trim(u8, buf[0..len], " \n\t\r");

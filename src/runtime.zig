@@ -6,9 +6,16 @@
 //! NVPrime Integration:
 //! - nvsync: VRR/G-Sync state and control
 //! - nvdisplay: Display configuration and HDR
+//!
+//! 595.45.04+ Optimizations:
+//! - CLOCK_MONOTONIC_RAW for NTP-immune frame timing
+//! - GPU power state management (GC6 prevention)
+//! - High-precision frame pacing
 
 const std = @import("std");
 const nvprime = @import("nvprime");
+const timing = @import("timing.zig");
+const power = @import("power.zig");
 
 // nvsync/nvdisplay integration via nvprime
 const nvsync = nvprime.nvruntime.nvsync;
@@ -17,12 +24,9 @@ const nvdisplay = nvprime.nvdisplay;
 // C library extern for setenv (not in Zig's std.c)
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-/// Get current time in nanoseconds
+/// Get current time in nanoseconds (uses high-precision timing module)
 fn getCurrentTimeNs() u64 {
-    const now = std.time.Instant.now() catch return 0;
-    const sec: u64 = @intCast(now.timestamp.sec);
-    const nsec: u64 = @intCast(now.timestamp.nsec);
-    return sec * 1_000_000_000 + nsec;
+    return timing.now();
 }
 
 /// Runtime configuration
@@ -107,10 +111,18 @@ pub const Context = struct {
     config: Config,
     running: bool = false,
 
-    // Frame timing
+    // Frame timing (high-precision)
     target_frame_ns: u64 = 0,
     last_frame_ns: u64 = 0,
     frame_count: u64 = 0,
+
+    // High-precision frame pacer (595.45.04+ optimization)
+    frame_pacer: timing.FramePacer = timing.FramePacer.init(0),
+    latency_tracker: timing.LatencyTracker = timing.LatencyTracker.init(),
+
+    // Power management (595.45.04+ optimization)
+    power_ctx: ?*power.Context = null,
+    power_profile: power.Profile = .default,
 
     // Statistics (300 frames ~ 5 seconds at 60fps)
     frame_times: RollingBuffer(300) = .{},
@@ -124,12 +136,17 @@ pub const Context = struct {
             .allocator = allocator,
             .config = config,
             .target_frame_ns = if (config.target_fps > 0) 1_000_000_000 / config.target_fps else 0,
+            .frame_pacer = timing.FramePacer.init(config.target_fps),
         };
         return self;
     }
 
     pub fn deinit(self: *Context) void {
         self.stop();
+        if (self.power_ctx) |pctx| {
+            pctx.deinit();
+            self.power_ctx = null;
+        }
         self.allocator.destroy(self);
     }
 
@@ -138,8 +155,28 @@ pub const Context = struct {
         self.last_frame_ns = getCurrentTimeNs();
     }
 
+    /// Start with power optimizations enabled
+    pub fn startOptimized(self: *Context, profile: power.Profile) !void {
+        // Initialize power management
+        if (self.power_ctx == null) {
+            self.power_ctx = power.Context.init(self.allocator, 0) catch null;
+        }
+        if (self.power_ctx) |pctx| {
+            pctx.applyProfile(profile) catch {};
+            self.power_profile = profile;
+        }
+
+        self.running = true;
+        self.last_frame_ns = getCurrentTimeNs();
+    }
+
     pub fn stop(self: *Context) void {
         self.running = false;
+
+        // Restore power state
+        if (self.power_ctx) |pctx| {
+            pctx.restore() catch {};
+        }
 
         // Kill game if running
         if (self.game_pid) |pid| {

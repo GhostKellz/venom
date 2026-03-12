@@ -386,9 +386,11 @@ fn getAverageGpuMs() f32 {
 // ============================================================================
 
 fn getCurrentTimeNs() u64 {
-    const now = std.time.Instant.now() catch return 0;
-    const sec: u64 = @intCast(now.timestamp.sec);
-    const nsec: u64 = @intCast(now.timestamp.nsec);
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    const sec: u64 = @intCast(ts.sec);
+    const nsec: u64 = @intCast(ts.nsec);
     return sec * 1_000_000_000 + nsec;
 }
 

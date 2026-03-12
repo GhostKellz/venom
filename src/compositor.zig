@@ -1790,7 +1790,9 @@ pub const Context = struct {
 
     /// Get current time in nanoseconds (monotonic)
     fn getNanoTimestamp() i128 {
-        const ts = std.posix.clock_gettime(.MONOTONIC) catch return 0;
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        if (rc != 0) return 0;
         return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
     }
 

@@ -34,10 +34,14 @@ pub const numa = @import("numa.zig");
 pub const proton = @import("proton.zig");
 pub const profiles = @import("profiles.zig");
 
+// 595.45.04+ optimizations
+pub const power = @import("power.zig");
+pub const timing = @import("timing.zig");
+
 // Re-export nvshader from nvprime (don't duplicate)
 pub const shader_cache = nvprime.nvruntime.nvshader;
 
-pub const version = "0.1.0";
+pub const version = "0.1.2";
 
 /// VENOM runtime state
 pub const State = enum {
